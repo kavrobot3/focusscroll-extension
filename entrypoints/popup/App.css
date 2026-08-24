@@ -1,7 +1,7 @@
 .popup-container {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   width: 100%;
 }
 
@@ -10,7 +10,7 @@
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid #1e293b;
-  padding-bottom: 10px;
+  padding-bottom: 12px;
 }
 
 .brand {
@@ -29,12 +29,12 @@
   justify-content: center;
   color: #ffffff;
   font-weight: 700;
-  font-size: 13px;
+  font-size: 14px;
   box-shadow: 0 0 12px rgba(6, 182, 212, 0.35);
 }
 
 .brand-title {
-  font-size: 14.5px;
+  font-size: 15px;
   font-weight: 600;
   color: #f8fafc;
   letter-spacing: -0.01em;
@@ -49,29 +49,20 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 8px;
+  padding: 4px 8px;
   border-radius: 9999px;
+  background-color: rgba(6, 182, 212, 0.12);
+  border: 1px solid rgba(6, 182, 212, 0.25);
   font-size: 10.5px;
   font-weight: 500;
-}
-
-.status-badge.active {
-  background-color: rgba(6, 182, 212, 0.14);
-  border: 1px solid rgba(6, 182, 212, 0.3);
   color: #22d3ee;
-}
-
-.status-badge.calibrating {
-  background-color: rgba(245, 158, 11, 0.12);
-  border: 1px solid rgba(245, 158, 11, 0.28);
-  color: #fbbf24;
 }
 
 .status-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background-color: currentColor;
+  background-color: #22d3ee;
   animation: pulse-dot 2s infinite ease-in-out;
 }
 
@@ -86,88 +77,53 @@
   }
 }
 
-/* Calibration Card */
-.calibration-card {
+.status-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   background-color: #111827;
   border: 1px solid #1f2937;
-  border-radius: 9px;
-  padding: 9px 11px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.calibration-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.calibration-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: #e2e8f0;
-}
-
-.calibration-ratio {
-  font-size: 10.5px;
-  font-weight: 600;
-  color: #22d3ee;
-}
-
-.calibration-bar-bg {
-  width: 100%;
-  height: 5px;
-  background-color: #1e293b;
-  border-radius: 9999px;
-  overflow: hidden;
-}
-
-.calibration-bar-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #06b6d4 0%, #38bdf8 100%);
-  border-radius: 9999px;
-  transition: width 0.3s ease;
-}
-
-.calibration-desc {
-  font-size: 10px;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 11.5px;
   color: #94a3b8;
-  line-height: 1.35;
 }
 
-/* Stats Grid */
+.status-banner-text {
+  flex: 1;
+}
+
 .stats-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 7px;
+  gap: 8px;
 }
 
 .stat-card {
   background-color: #131b26;
   border: 1px solid #1e293b;
-  border-radius: 9px;
-  padding: 8px 10px;
+  border-radius: 10px;
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 
 .stat-card.highlight {
   border-color: rgba(6, 182, 212, 0.3);
-  background: linear-gradient(180deg, rgba(6, 182, 212, 0.09) 0%, #131b26 100%);
+  background: linear-gradient(180deg, rgba(6, 182, 212, 0.08) 0%, #131b26 100%);
 }
 
 .stat-label {
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 500;
   color: #94a3b8;
   text-transform: uppercase;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.03em;
 }
 
 .stat-value {
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 700;
   color: #f1f5f9;
   letter-spacing: -0.02em;
@@ -177,23 +133,17 @@
   color: #22d3ee;
 }
 
-.stat-sub {
-  font-size: 9.5px;
-  color: #64748b;
-}
-
-/* Recent Section */
 .recent-section {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
 }
 
 .recent-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 500;
   color: #94a3b8;
   padding: 0 2px;
@@ -203,13 +153,13 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: 105px;
+  max-height: 120px;
   overflow-y: auto;
   padding-right: 2px;
 }
 
 .recent-list::-webkit-scrollbar {
-  width: 3px;
+  width: 4px;
 }
 
 .recent-list::-webkit-scrollbar-thumb {
@@ -224,72 +174,49 @@
   background-color: #0f172a;
   border: 1px solid #1e293b;
   border-radius: 6px;
-  padding: 5px 8px;
-  font-size: 10.5px;
-}
-
-.recent-info {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
 }
 
 .recent-video-id {
   font-family: monospace;
   color: #cbd5e1;
-  max-width: 100px;
+  max-width: 130px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.recent-tag {
-  font-size: 9px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  font-weight: 500;
-}
-
-.recent-tag.calib {
-  background-color: rgba(245, 158, 11, 0.15);
-  color: #fbbf24;
-}
-
-.recent-tag.gated {
-  background-color: rgba(6, 182, 212, 0.15);
-  color: #22d3ee;
-}
-
 .recent-dwell {
   font-weight: 600;
-  color: #f1f5f9;
+  color: #22d3ee;
 }
 
 .empty-state {
   text-align: center;
-  padding: 12px 8px;
-  font-size: 11px;
+  padding: 14px 8px;
+  font-size: 11.5px;
   color: #64748b;
   background-color: #0f172a;
   border: 1px dashed #1e293b;
-  border-radius: 7px;
+  border-radius: 8px;
 }
 
-/* Actions */
 .actions {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
+  margin-top: 2px;
 }
 
 .btn-clear {
   width: 100%;
-  padding: 7px 11px;
+  padding: 8px 12px;
   background-color: #1e293b;
   color: #e2e8f0;
   border: 1px solid #334155;
-  border-radius: 7px;
-  font-size: 11.5px;
+  border-radius: 8px;
+  font-size: 12px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -305,24 +232,29 @@
   color: #f8fafc;
 }
 
+.btn-clear:active {
+  transform: scale(0.99);
+}
+
 .btn-simulate {
   width: 100%;
-  padding: 5px 9px;
-  background-color: rgba(6, 182, 212, 0.08);
+  padding: 6px 10px;
+  background-color: rgba(6, 182, 212, 0.1);
   color: #22d3ee;
-  border: 1px dashed rgba(6, 182, 212, 0.35);
+  border: 1px dashed rgba(6, 182, 212, 0.4);
   border-radius: 6px;
-  font-size: 10.5px;
+  font-size: 11px;
   cursor: pointer;
   transition: background-color 0.15s;
 }
 
 .btn-simulate:hover {
-  background-color: rgba(6, 182, 212, 0.18);
+  background-color: rgba(6, 182, 212, 0.2);
 }
 
 .footer-note {
-  font-size: 9px;
+  font-size: 9.5px;
   color: #64748b;
   text-align: center;
+  margin-top: 2px;
 }

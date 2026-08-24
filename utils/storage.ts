@@ -1,7 +1,6 @@
 import type { ShortViewEvent, ShortsStats } from './types';
 
 export const STORAGE_KEY_EVENTS = 'focusscroll_short_view_events';
-export const CALIBRATION_COUNT = 6;
 
 function hasChromeStorage(): boolean {
   return (
@@ -96,60 +95,17 @@ export function onStorageChanged(callback: (events: ShortViewEvent[]) => void): 
 }
 
 /**
- * Calculate calibration and intervention targets based on historical events
- */
-export function computeTargetAndGate(events: ShortViewEvent[]): {
-  isCalibrated: boolean;
-  calibrationCount: number;
-  baselineDwellMs: number;
-  currentTargetSec: number;
-  minimumGateSec: number;
-} {
-  // Sort events chronologically (oldest first) to find the first 6 calibration events
-  const chronological = [...events].sort((a, b) => a.startedAt - b.startedAt);
-  const totalCount = chronological.length;
-
-  if (totalCount < CALIBRATION_COUNT) {
-    return {
-      isCalibrated: false,
-      calibrationCount: totalCount,
-      baselineDwellMs: 0,
-      currentTargetSec: 0,
-      minimumGateSec: 0,
-    };
-  }
-
-  // Calculate baseline average from the first CALIBRATION_COUNT events
-  const calibrationSlice = chronological.slice(0, CALIBRATION_COUNT);
-  const sumDwell = calibrationSlice.reduce((acc, curr) => acc + curr.dwellMs, 0);
-  const baselineDwellMs = Math.round(sumDwell / CALIBRATION_COUNT);
-  const baselineSec = Math.max(5, Math.round(baselineDwellMs / 1000));
-
-  const currentTargetSec = baselineSec;
-  // Minimum gate: currentTargetSec - 5 seconds, but never below 2 seconds
-  const minimumGateSec = Math.max(2, currentTargetSec - 5);
-
-  return {
-    isCalibrated: true,
-    calibrationCount: CALIBRATION_COUNT,
-    baselineDwellMs,
-    currentTargetSec,
-    minimumGateSec,
-  };
-}
-
-/**
- * Calculate aggregate statistics for viewing events and calibration metrics
+ * Calculate aggregate statistics for today's viewing events
  */
 export function calculateShortsStats(events: ShortViewEvent[]): ShortsStats {
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
 
   const todayEvents = events.filter((e) => e.startedAt >= startOfDay);
+
   const todayCount = todayEvents.length;
   let totalDwellMsToday = 0;
   let longestDwellMs = 0;
-  let totalEarlyScrollAttempts = 0;
 
   for (const ev of todayEvents) {
     totalDwellMsToday += ev.dwellMs;
@@ -158,26 +114,13 @@ export function calculateShortsStats(events: ShortViewEvent[]): ShortsStats {
     }
   }
 
-  for (const ev of events) {
-    totalEarlyScrollAttempts += (ev.earlyScrollAttempts || 0);
-  }
-
   const avgDwellMs = todayCount > 0 ? Math.round(totalDwellMsToday / todayCount) : 0;
-
-  const targetInfo = computeTargetAndGate(events);
 
   return {
     todayCount,
     avgDwellMs,
     longestDwellMs,
     totalDwellMsToday,
-    isCalibrated: targetInfo.isCalibrated,
-    calibrationCount: targetInfo.calibrationCount,
-    calibrationTotal: CALIBRATION_COUNT,
-    baselineDwellMs: targetInfo.baselineDwellMs,
-    currentTargetSec: targetInfo.currentTargetSec,
-    minimumGateSec: targetInfo.minimumGateSec,
-    totalEarlyScrollAttempts,
     events,
   };
 }
