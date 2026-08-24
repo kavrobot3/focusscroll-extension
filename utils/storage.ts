@@ -1,7 +1,7 @@
 import type { ShortViewEvent, ShortsStats, CalibrationInfo } from './types';
 
 export const STORAGE_KEY_EVENTS = 'focusscroll_short_view_events';
-export const CALIBRATION_COUNT_REQUIRED = 6;
+export const CALIBRATION_COUNT_REQUIRED = 3;
 
 /**
  * Check if Chrome Extension runtime context is still valid and not disconnected/invalidated
@@ -71,9 +71,9 @@ export async function getShortViewEvents(): Promise<ShortViewEvent[]> {
  * Compute calibration details and current hidden focus target from recorded events
  */
 export function getCalibrationInfo(events: ShortViewEvent[]): CalibrationInfo {
-  // Sort chronologically ascending by startedAt to identify the true first 6 calibration sessions
+  // Sort chronologically ascending by startedAt to identify calibration sessions
   const chronological = [...events].sort((a, b) => a.startedAt - b.startedAt);
-  const validEvents = chronological.filter((e) => e.dwellMs >= 500);
+  const validEvents = chronological.filter((e) => e.dwellMs >= 400);
 
   const calibrationEvents = validEvents.slice(0, CALIBRATION_COUNT_REQUIRED);
   const count = calibrationEvents.length;
@@ -84,10 +84,10 @@ export function getCalibrationInfo(events: ShortViewEvent[]): CalibrationInfo {
       isCalibrated: false,
       calibrationCount: 0,
       calibrationTarget: CALIBRATION_COUNT_REQUIRED,
-      baselineDwellMs: 0,
-      baselineDwellSec: 0,
-      currentTargetSec: null,
-      minimumGateSec: null,
+      baselineDwellMs: 4000,
+      baselineDwellSec: 4.0,
+      currentTargetSec: 8,
+      minimumGateSec: 4,
     };
   }
 
@@ -102,16 +102,17 @@ export function getCalibrationInfo(events: ShortViewEvent[]): CalibrationInfo {
       calibrationTarget: CALIBRATION_COUNT_REQUIRED,
       baselineDwellMs,
       baselineDwellSec,
-      currentTargetSec: null,
-      minimumGateSec: null,
+      // Provide an immediate active gentle gate even while building calibration baseline
+      currentTargetSec: Math.max(6, Math.round(baselineDwellSec * 1.3)),
+      minimumGateSec: Math.max(3, Math.min(6, Math.round(baselineDwellSec * 0.8))),
     };
   }
 
-  // From the 7th Short onward:
+  // Once calibrated:
   // Set currentTargetSec based on baseline average
-  const currentTargetSec = Math.max(3, Math.round(baselineDwellSec));
-  // Minimum gate: currentTargetSec - 5 seconds, minimum gate never below 2 seconds
-  const minimumGateSec = Math.max(2, currentTargetSec - 5);
+  const currentTargetSec = Math.max(6, Math.round(baselineDwellSec * 1.2));
+  // Minimum gate: target - 3 seconds, bounded between 3s and 12s
+  const minimumGateSec = Math.max(3, Math.min(12, currentTargetSec - 3));
 
   return {
     isCalibrated: true,

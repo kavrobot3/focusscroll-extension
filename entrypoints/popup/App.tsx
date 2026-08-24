@@ -141,17 +141,17 @@ export default function App() {
   };
 
   const handleSimulateFastTrackCalibration = async () => {
-    // Generate 6 sample calibration events with varied dwells
+    // Generate 3 sample calibration events with varied dwells
     const now = Date.now();
-    const durations = [14, 18, 12, 22, 16, 20]; // average: 17.0s
-    const sampleIds = ['dQw4w9WgXcQ', '3JZ_D3ELwOQ', 'kXYiU_JCYtU', '9bZkp7q19f0', 'kJQP7kiw5Fk', '7xQ2e5j49M8'];
+    const durations = [14, 18, 16]; // average: 16.0s
+    const sampleIds = ['dQw4w9WgXcQ', '3JZ_D3ELwOQ', 'kXYiU_JCYtU'];
 
     await clearShortViewEvents();
 
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 3; i++) {
       const durSec = durations[i] ?? 15;
       const dwellMs = durSec * 1000;
-      const startedAt = now - (6 - i) * 60000;
+      const startedAt = now - (3 - i) * 60000;
       const endedAt = startedAt + dwellMs;
       const vid = sampleIds[i] ?? `demo_${i}`;
 
@@ -164,8 +164,8 @@ export default function App() {
         dwellMs,
         timestamp: new Date(endedAt).toISOString(),
         calibration: true,
-        currentTargetSec: null,
-        minimumGateSec: null,
+        currentTargetSec: 8,
+        minimumGateSec: 4,
         earlyScrollAttempts: 0,
         gateUnlocked: true,
       };
@@ -174,7 +174,7 @@ export default function App() {
 
     const updated = await getShortViewEvents();
     setStats(calculateShortsStats(updated));
-    setActionFeedback('6 Calibration Shorts generated! Baseline ~17s');
+    setActionFeedback('3 Calibration Shorts generated! Baseline ~16s');
     setTimeout(() => setActionFeedback(null), 2000);
   };
 
@@ -228,7 +228,7 @@ export default function App() {
         <div className="calibration-caption">
           {stats.isCalibrated
             ? 'Gentle focus intervention is active. Scrolls are gently gated on early exits.'
-            : 'First 6 Shorts establish your natural baseline dwell time without scroll restrictions.'}
+            : 'Focus protection starts immediately with a gentle gate while establishing your personalized baseline.'}
         </div>
       </section>
 
@@ -238,16 +238,16 @@ export default function App() {
         <div className={`stat-card ${stats.isCalibrated ? 'highlight' : ''}`} id="stat-card-target">
           <span className="stat-label">Hidden Target</span>
           <span className="stat-value cyan">
-            {stats.isCalibrated && stats.currentTargetSec !== null ? (
+            {stats.currentTargetSec !== null ? (
               `${stats.currentTargetSec}s`
             ) : (
-              <span className="text-dim text-sm">In Calibration</span>
+              <span className="text-dim text-sm">8s</span>
             )}
           </span>
           <span className="stat-subtext">
-            {stats.isCalibrated && stats.minimumGateSec !== null
+            {stats.minimumGateSec !== null
               ? `Gate: ${stats.minimumGateSec}s min`
-              : 'Unlocks after 6 Shorts'}
+              : 'Initial Gate: 3s'}
           </span>
         </div>
 

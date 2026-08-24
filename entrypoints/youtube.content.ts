@@ -45,6 +45,56 @@ export default defineContentScript({
     let pollInterval: ReturnType<typeof setInterval> | null = null;
     let domObserver: MutationObserver | null = null;
     let unsubsStorage: (() => void) | null = null;
+    let lastAttemptTimestamp = 0;
+    let isScrollLocked = false;
+
+    /**
+     * Inject persistent CSS rule to completely freeze the Shorts scroll container when gated
+     */
+    function injectScrollLockStyles() {
+      if (document.getElementById('focusscroll-lock-styles')) return;
+      const style = document.createElement('style');
+      style.id = 'focusscroll-lock-styles';
+      style.textContent = `
+        html.focusscroll-locked ytd-shorts #shorts-container,
+        html.focusscroll-locked #shorts-container,
+        html.focusscroll-locked #shorts-inner-container,
+        html.focusscroll-locked ytd-shorts,
+        .focusscroll-locked-container {
+          overflow-y: hidden !important;
+          touch-action: none !important;
+          overscroll-behavior-y: none !important;
+          scroll-snap-type: none !important;
+        }
+      `;
+      (document.head || document.documentElement).appendChild(style);
+    }
+
+    injectScrollLockStyles();
+
+    /**
+     * Dynamically lock or unlock physical scroll on the Shorts container
+     */
+    function setPhysicalScrollLock(locked: boolean) {
+      if (isScrollLocked === locked) return;
+      isScrollLocked = locked;
+
+      if (locked) {
+        document.documentElement.classList.add('focusscroll-locked');
+        document.body.classList.add('focusscroll-locked');
+        const container = document.querySelector('#shorts-container');
+        if (container) {
+          container.classList.add('focusscroll-locked-container');
+        }
+      } else {
+        document.documentElement.classList.remove('focusscroll-locked');
+        document.body.classList.remove('focusscroll-locked');
+        const container = document.querySelector('#shorts-container');
+        if (container) {
+          container.classList.remove('focusscroll-locked-container');
+        }
+      }
+    }
 
     // Initialize events cache and listen for updates safely
     getShortViewEvents().then((events) => {
@@ -81,36 +131,49 @@ export default defineContentScript({
       if (!el) {
         el = document.createElement('div');
         el.id = 'focusscroll-gentle-indicator';
-        el.textContent = 'Stay a little longer…';
+        el.textContent = 'Stay a moment…';
         Object.assign(el.style, {
           position: 'fixed',
-          bottom: '76px',
+          bottom: '80px',
           left: '50%',
           transform: 'translateX(-50%) translateY(8px)',
-          backgroundColor: 'rgba(15, 23, 42, 0.88)',
+          backgroundColor: 'rgba(15, 23, 42, 0.92)',
           color: '#22d3ee',
-          border: '1px solid rgba(6, 182, 212, 0.4)',
+          border: '1px solid rgba(6, 182, 212, 0.5)',
           borderRadius: '9999px',
-          padding: '7px 18px',
-          fontSize: '13px',
+          padding: '8px 20px',
+          fontSize: '13.5px',
           fontWeight: '500',
           letterSpacing: '0.01em',
-          boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5), 0 0 12px rgba(6, 182, 212, 0.25)',
-          backdropFilter: 'blur(8px)',
-          webkitBackdropFilter: 'blur(8px)',
+          boxShadow: '0 8px 24px rgba(0, 0, 0, 0.6), 0 0 16px rgba(6, 182, 212, 0.3)',
+          backdropFilter: 'blur(10px)',
+          webkitBackdropFilter: 'blur(10px)',
           pointerEvents: 'none',
           zIndex: '2147483647',
           opacity: '0',
-          transition: 'opacity 0.25s cubic-bezier(0.16, 1, 0.3, 1), transform 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+          transition: 'opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
           fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
         });
-        document.body.appendChild(el);
+        (document.body || document.documentElement).appendChild(el);
       }
       return el;
     }
 
+    function getRemainingGateSeconds(): number {
+      if (!currentSession) return 0;
+      const elapsedSec = getActiveElapsedPlayMs() / 1000;
+      const minGate = currentSession.minimumGateSec ?? 3;
+      const duration = currentSession.videoDurationSec;
+      const effectiveGate = duration && duration > 0 ? Math.min(minGate, Math.max(1, duration - 0.2)) : minGate;
+      return Math.max(1, Math.ceil(effectiveGate - elapsedSec));
+    }
+
     function showGentleMessage() {
       const el = getOrCreateIndicator();
+      const remaining = getRemainingGateSeconds();
+      el.textContent = `✨ Stay a moment… (${remaining}s remaining)`;
+      el.style.color = '#22d3ee';
+      el.style.borderColor = 'rgba(6, 182, 212, 0.5)';
       el.style.opacity = '1';
       el.style.transform = 'translateX(-50%) translateY(0px)';
 
@@ -121,7 +184,25 @@ export default defineContentScript({
       indicatorTimeout = setTimeout(() => {
         el.style.opacity = '0';
         el.style.transform = 'translateX(-50%) translateY(8px)';
-      }, 1600);
+      }, 1500);
+    }
+
+    function showUnlockedMessage() {
+      const el = getOrCreateIndicator();
+      el.textContent = '✓ Gate Unlocked';
+      el.style.color = '#34d399';
+      el.style.borderColor = 'rgba(52, 211, 153, 0.5)';
+      el.style.opacity = '1';
+      el.style.transform = 'translateX(-50%) translateY(0px)';
+
+      if (indicatorTimeout) {
+        clearTimeout(indicatorTimeout);
+      }
+
+      indicatorTimeout = setTimeout(() => {
+        el.style.opacity = '0';
+        el.style.transform = 'translateX(-50%) translateY(8px)';
+      }, 1000);
     }
 
     /**
@@ -198,25 +279,33 @@ export default defineContentScript({
      * Check if the gate is currently active and blocking navigation to the next short
      */
     function isGateActive(): boolean {
-      if (!currentSession) return false;
-      if (currentSession.calibration) return false;
-      if (currentSession.gateUnlocked) return false;
+      if (!currentSession) {
+        setPhysicalScrollLock(false);
+        return false;
+      }
+      if (currentSession.gateUnlocked) {
+        setPhysicalScrollLock(false);
+        return false;
+      }
 
       // 1. Never restrict scrolling on ads or sponsored content
       if (isAdActive()) {
         currentSession.gateUnlocked = true;
+        setPhysicalScrollLock(false);
         return false;
       }
 
-      // 2. Allow user to scroll if more than 4 times attempted to skip
-      if (currentSession.earlyScrollAttempts >= 4) {
+      // 2. Allow user to scroll if more than 4 times deliberately attempted to skip
+      if (currentSession.earlyScrollAttempts >= 5) {
         currentSession.gateUnlocked = true;
+        setPhysicalScrollLock(false);
         return false;
       }
 
       // 3. If short has already completed full watch or looped, gate is immediately unlocked
       if (currentSession.hasCompletedFullLoop) {
         currentSession.gateUnlocked = true;
+        setPhysicalScrollLock(false);
         return false;
       }
 
@@ -226,6 +315,7 @@ export default defineContentScript({
         if (video.ended) {
           currentSession.hasCompletedFullLoop = true;
           currentSession.gateUnlocked = true;
+          setPhysicalScrollLock(false);
           return false;
         }
 
@@ -237,35 +327,59 @@ export default defineContentScript({
           if (video.currentTime >= duration - 0.4) {
             currentSession.hasCompletedFullLoop = true;
             currentSession.gateUnlocked = true;
+            setPhysicalScrollLock(false);
             return false;
           }
 
           // If target or minimum gate > short length:
           // Effective gate must never exceed the video length
           const effectiveGateSec = Math.min(
-            currentSession.minimumGateSec ?? 2,
+            currentSession.minimumGateSec ?? 3,
             Math.max(1, duration - 0.2)
           );
 
           const activePlaySec = getActiveElapsedPlayMs() / 1000;
           if (activePlaySec >= effectiveGateSec) {
             currentSession.gateUnlocked = true;
+            setPhysicalScrollLock(false);
             return false;
           }
 
+          setPhysicalScrollLock(true);
           return true;
         }
       }
 
-      const minGate = currentSession.minimumGateSec ?? 2;
+      const minGate = currentSession.minimumGateSec ?? 3;
       const elapsedSec = getActiveElapsedPlayMs() / 1000;
 
       if (elapsedSec >= minGate) {
         currentSession.gateUnlocked = true;
+        setPhysicalScrollLock(false);
         return false;
       }
 
+      setPhysicalScrollLock(true);
       return true;
+    }
+
+    /**
+     * Clamp scroll container position to active Short if gated
+     */
+    function clampScrollPosition() {
+      if (!isGateActive()) return;
+
+      const container = document.querySelector('#shorts-container') as HTMLElement;
+      const activeRenderer =
+        (document.querySelector('ytd-reel-video-renderer[is-active]') as HTMLElement) ||
+        (document.querySelector('ytd-reel-video-renderer[active]') as HTMLElement);
+
+      if (container && activeRenderer) {
+        const targetTop = activeRenderer.offsetTop;
+        if (Math.abs(container.scrollTop - targetTop) > 2) {
+          container.scrollTop = targetTop;
+        }
+      }
     }
 
     /**
@@ -369,6 +483,7 @@ export default defineContentScript({
       if (!currentSession) return;
       currentSession.hasCompletedFullLoop = true;
       currentSession.gateUnlocked = true;
+      setPhysicalScrollLock(false);
     }
 
     function handleVideoTimeUpdate() {
@@ -384,16 +499,28 @@ export default defineContentScript({
         if (currentTime >= duration - 0.4 || activeVideoEl.ended) {
           currentSession.hasCompletedFullLoop = true;
           currentSession.gateUnlocked = true;
+          setPhysicalScrollLock(false);
         }
 
         // 2. Loop detected (currentTime jumped from near end back to start)
         if (lastVideoCurrentTime > Math.max(1, duration - 1.5) && currentTime < 1.0) {
           currentSession.hasCompletedFullLoop = true;
           currentSession.gateUnlocked = true;
+          setPhysicalScrollLock(false);
         }
       }
 
       lastVideoCurrentTime = currentTime;
+
+      // Check gate status on timeupdate
+      if (currentSession && !currentSession.gateUnlocked) {
+        const elapsedSec = getActiveElapsedPlayMs() / 1000;
+        const minGate = currentSession.minimumGateSec ?? 3;
+        if (elapsedSec >= minGate) {
+          currentSession.gateUnlocked = true;
+          setPhysicalScrollLock(false);
+        }
+      }
     }
 
     function bindActiveVideo(video: HTMLVideoElement | null) {
@@ -472,6 +599,9 @@ export default defineContentScript({
     function finalizeCurrentSession() {
       if (!currentSession) return;
 
+      // Unlock physical scroll when leaving or finishing
+      setPhysicalScrollLock(false);
+
       // Sync active play time
       if (activeVideoEl && activeVideoEl.paused) {
         currentSession.isPlaying = false;
@@ -494,13 +624,12 @@ export default defineContentScript({
       // Shorts have a maximum duration of 180 seconds on YouTube
       dwellMs = Math.min(dwellMs, 180000);
 
-      // Ignore invalid events (< 500ms active dwell time)
-      if (dwellMs >= 500 && currentSession.videoId) {
+      // Save events with at least 400ms dwell
+      if (dwellMs >= 400 && currentSession.videoId) {
         const dwellSec = dwellMs / 1000;
         const gateUnlocked =
-          currentSession.calibration ||
           currentSession.hasCompletedFullLoop ||
-          (dwellSec >= (currentSession.minimumGateSec || 2));
+          (dwellSec >= (currentSession.minimumGateSec || 3));
 
         const event: ShortViewEvent = {
           id: currentSession.id,
@@ -517,13 +646,15 @@ export default defineContentScript({
           gateUnlocked,
         };
 
+        // Immediately update in-memory cache
+        storedEventsCache = [event, ...storedEventsCache.filter((e) => e.id !== event.id)];
         saveShortViewEvent(event);
         log(
           `Event saved: #${event.videoId} (${(dwellMs / 1000).toFixed(1)}s active dwell, ` +
           `calib=${event.calibration}, earlyAttempts=${event.earlyScrollAttempts}, gateUnlocked=${gateUnlocked})`
         );
       } else if (currentSession.videoId) {
-        log(`Ignored quick swipe (<500ms active): #${currentSession.videoId} (${dwellMs}ms)`);
+        log(`Ignored quick swipe (<400ms active): #${currentSession.videoId} (${dwellMs}ms)`);
       }
 
       currentSession = null;
@@ -543,6 +674,7 @@ export default defineContentScript({
           lastHandledVideoId = null;
           bindActiveVideo(null);
         }
+        setPhysicalScrollLock(false);
         return;
       }
 
@@ -555,8 +687,13 @@ export default defineContentScript({
         return;
       }
 
-      // If we are already tracking this exact video, nothing to do
+      // If we are already tracking this exact video, check gate state
       if (currentSession && videoId === lastHandledVideoId && currentSession.videoId === videoId) {
+        if (isGateActive()) {
+          setPhysicalScrollLock(true);
+        } else {
+          setPhysicalScrollLock(false);
+        }
         return;
       }
 
@@ -568,8 +705,8 @@ export default defineContentScript({
       // Calculate calibration & target configuration for this new Short
       const calibInfo = getCalibrationInfo(storedEventsCache);
       const isCalibration = !calibInfo.isCalibrated;
-      const currentTargetSec = calibInfo.isCalibrated ? calibInfo.currentTargetSec : null;
-      const minimumGateSec = calibInfo.isCalibrated ? calibInfo.minimumGateSec : null;
+      const currentTargetSec = calibInfo.currentTargetSec ?? 8;
+      const minimumGateSec = calibInfo.minimumGateSec ?? 3;
 
       // Start new short session
       lastHandledVideoId = videoId;
@@ -591,11 +728,14 @@ export default defineContentScript({
         currentTargetSec,
         minimumGateSec,
         earlyScrollAttempts: 0,
-        gateUnlocked: isCalibration, // Unlocked immediately during calibration
+        gateUnlocked: false, // Active gate enabled right from Short #1
       };
 
+      // Activate physical scroll lock on start
+      setPhysicalScrollLock(true);
+
       if (isCalibration) {
-        log(`Active Short #${videoId} [Calibration ${calibInfo.calibrationCount + 1}/6]: Unrestricted`);
+        log(`Active Short #${videoId} [Calibration ${calibInfo.calibrationCount + 1}/3]: Gate ${minimumGateSec}s (Target: ${currentTargetSec}s)`);
       } else {
         log(`Active Short #${videoId} [Intervention]: Gate ${minimumGateSec}s (Target: ${currentTargetSec}s)`);
       }
@@ -610,19 +750,66 @@ export default defineContentScript({
 
       // deltaY > 0 indicates scrolling down towards next Short
       if (e.deltaY > 0 && isGateActive()) {
-        if (currentSession) {
-          currentSession.earlyScrollAttempts += 1;
-          if (currentSession.earlyScrollAttempts > 4) {
-            currentSession.gateUnlocked = true;
-            return; // Allow scroll through
-          }
-        }
-
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
+
+        const now = Date.now();
+        if (now - lastAttemptTimestamp > 1000) {
+          lastAttemptTimestamp = now;
+          if (currentSession) {
+            currentSession.earlyScrollAttempts += 1;
+            if (currentSession.earlyScrollAttempts >= 5) {
+              currentSession.gateUnlocked = true;
+              setPhysicalScrollLock(false);
+              showUnlockedMessage();
+              return;
+            }
+          }
+        }
+
         showGentleMessage();
+        clampScrollPosition();
         return false;
+      }
+    }
+
+    let touchStartY = 0;
+
+    function handleTouchStart(e: TouchEvent) {
+      if (e.touches && e.touches[0]) {
+        touchStartY = e.touches[0].clientY;
+      }
+    }
+
+    function handleTouchMove(e: TouchEvent) {
+      if (!ensureContextValid()) return;
+
+      if (isGateActive() && e.touches && e.touches[0]) {
+        const deltaY = touchStartY - e.touches[0].clientY; // Swiping up moves content down to next video
+        if (deltaY > 5) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+
+          const now = Date.now();
+          if (now - lastAttemptTimestamp > 1000) {
+            lastAttemptTimestamp = now;
+            if (currentSession) {
+              currentSession.earlyScrollAttempts += 1;
+              if (currentSession.earlyScrollAttempts >= 5) {
+                currentSession.gateUnlocked = true;
+                setPhysicalScrollLock(false);
+                showUnlockedMessage();
+                return;
+              }
+            }
+          }
+
+          showGentleMessage();
+          clampScrollPosition();
+          return false;
+        }
       }
     }
 
@@ -642,21 +829,69 @@ export default defineContentScript({
       }
 
       // Next Short navigation keys: ArrowDown, PageDown, 'j'
-      // Normal browser controls (Space/k for pause, ArrowUp/PageUp for previous, m for mute, etc.) remain allowed
       if ((e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === 'j') && isGateActive()) {
-        if (currentSession) {
-          currentSession.earlyScrollAttempts += 1;
-          if (currentSession.earlyScrollAttempts > 4) {
-            currentSession.gateUnlocked = true;
-            return; // Allow navigation through
-          }
-        }
-
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
+
+        const now = Date.now();
+        if (now - lastAttemptTimestamp > 1000) {
+          lastAttemptTimestamp = now;
+          if (currentSession) {
+            currentSession.earlyScrollAttempts += 1;
+            if (currentSession.earlyScrollAttempts >= 5) {
+              currentSession.gateUnlocked = true;
+              setPhysicalScrollLock(false);
+              showUnlockedMessage();
+              return;
+            }
+          }
+        }
+
+        showGentleMessage();
+        clampScrollPosition();
+        return false;
+      }
+    }
+
+    function handleClick(e: MouseEvent) {
+      if (!ensureContextValid()) return;
+      if (!isGateActive()) return;
+
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+
+      const nextNavBtn = target.closest(
+        '#navigation-button-down, button[aria-label="Next video"], .ytd-reel-video-renderer #navigation-button-down'
+      );
+
+      if (nextNavBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+
+        const now = Date.now();
+        if (now - lastAttemptTimestamp > 1000) {
+          lastAttemptTimestamp = now;
+          if (currentSession) {
+            currentSession.earlyScrollAttempts += 1;
+            if (currentSession.earlyScrollAttempts >= 5) {
+              currentSession.gateUnlocked = true;
+              setPhysicalScrollLock(false);
+              showUnlockedMessage();
+              return;
+            }
+          }
+        }
+
         showGentleMessage();
         return false;
+      }
+    }
+
+    function handleScroll() {
+      if (isGateActive()) {
+        clampScrollPosition();
       }
     }
 
@@ -664,8 +899,15 @@ export default defineContentScript({
     window.addEventListener('wheel', handleWheel, { capture: true, passive: false });
     document.addEventListener('wheel', handleWheel, { capture: true, passive: false });
 
+    window.addEventListener('touchstart', handleTouchStart, { capture: true, passive: true });
+    window.addEventListener('touchmove', handleTouchMove, { capture: true, passive: false });
+    document.addEventListener('touchmove', handleTouchMove, { capture: true, passive: false });
+
     window.addEventListener('keydown', handleKeyDown, { capture: true });
     document.addEventListener('keydown', handleKeyDown, { capture: true });
+
+    document.addEventListener('click', handleClick, { capture: true });
+    window.addEventListener('scroll', handleScroll, { capture: true, passive: true });
 
     // 3. YouTube Custom SPA Navigation Events
     const handleNavigationEvent = () => {
@@ -690,12 +932,12 @@ export default defineContentScript({
     // 5. User Interaction fallback triggers
     const handleWheelInteraction = () => {
       if (!ensureContextValid()) return;
-      setTimeout(checkShortState, 100);
+      setTimeout(checkShortState, 80);
     };
     const handleKeyInteraction = (e: KeyboardEvent) => {
       if (!ensureContextValid()) return;
       if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'j', 'k'].includes(e.key)) {
-        setTimeout(checkShortState, 150);
+        setTimeout(checkShortState, 100);
       }
     };
     window.addEventListener('wheel', handleWheelInteraction, { passive: true });
@@ -718,7 +960,7 @@ export default defineContentScript({
     pollInterval = setInterval(() => {
       if (!ensureContextValid()) return;
       checkShortState();
-    }, 400);
+    }, 250);
 
     // 8. Page Visibility and Unload Handling
     const handleVisibilityChange = () => {
@@ -751,6 +993,8 @@ export default defineContentScript({
         // Ignore session finalization error on cleanup
       }
 
+      setPhysicalScrollLock(false);
+
       if (pollInterval) {
         clearInterval(pollInterval);
         pollInterval = null;
@@ -774,8 +1018,13 @@ export default defineContentScript({
 
       window.removeEventListener('wheel', handleWheel, { capture: true });
       document.removeEventListener('wheel', handleWheel, { capture: true });
+      window.removeEventListener('touchstart', handleTouchStart, { capture: true });
+      window.removeEventListener('touchmove', handleTouchMove, { capture: true });
+      document.removeEventListener('touchmove', handleTouchMove, { capture: true });
       window.removeEventListener('keydown', handleKeyDown, { capture: true });
       document.removeEventListener('keydown', handleKeyDown, { capture: true });
+      document.removeEventListener('click', handleClick, { capture: true });
+      window.removeEventListener('scroll', handleScroll, { capture: true });
 
       ytEvents.forEach((evtName) => {
         window.removeEventListener(evtName, handleNavigationEvent);
@@ -797,4 +1046,3 @@ export default defineContentScript({
     }
   },
 });
-
