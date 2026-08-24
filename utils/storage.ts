@@ -8,11 +8,15 @@ export const CALIBRATION_COUNT_REQUIRED = 6;
  */
 export function isExtensionContextValid(): boolean {
   try {
-    return (
-      typeof chrome !== 'undefined' &&
-      Boolean(chrome?.runtime?.id) &&
-      Boolean(chrome?.storage?.local)
-    );
+    if (
+      typeof chrome === 'undefined' ||
+      !chrome?.runtime ||
+      !chrome.runtime.id ||
+      !chrome?.storage?.local
+    ) {
+      return false;
+    }
+    return true;
   } catch {
     return false;
   }
@@ -55,11 +59,7 @@ export async function getShortViewEvents(): Promise<ShortViewEvent[]> {
     try {
       const data = await chrome.storage.local.get(STORAGE_KEY_EVENTS);
       return (data[STORAGE_KEY_EVENTS] as ShortViewEvent[]) || [];
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      if (!errMsg.includes('Extension context invalidated')) {
-        console.warn('FocusScroll: Could not read chrome.storage, using localStorage fallback', err);
-      }
+    } catch {
       return getFromLocalStorage();
     }
   }
@@ -137,20 +137,14 @@ export async function saveShortViewEvent(event: ShortViewEvent): Promise<void> {
       try {
         await chrome.storage.local.set({ [STORAGE_KEY_EVENTS]: updated });
         return;
-      } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        if (!errMsg.includes('Extension context invalidated')) {
-          console.warn('FocusScroll: Failed to write to chrome.storage, falling back to localStorage', err);
-        }
+      } catch {
+        // Fall back to localStorage
       }
     }
 
     saveToLocalStorage(updated);
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    if (!errMsg.includes('Extension context invalidated')) {
-      console.warn('FocusScroll: Failed to save event', err);
-    }
+  } catch {
+    // Silently ignore storage failures
   }
 }
 
@@ -162,11 +156,8 @@ export async function clearShortViewEvents(): Promise<void> {
     if (isExtensionContextValid()) {
       try {
         await chrome.storage.local.remove(STORAGE_KEY_EVENTS);
-      } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        if (!errMsg.includes('Extension context invalidated')) {
-          console.warn('FocusScroll: Failed to clear chrome.storage', err);
-        }
+      } catch {
+        // Fall back to localStorage
       }
     }
 
@@ -174,11 +165,8 @@ export async function clearShortViewEvents(): Promise<void> {
       localStorage.removeItem(STORAGE_KEY_EVENTS);
       window.dispatchEvent(new Event('focusscroll_storage_updated'));
     }
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    if (!errMsg.includes('Extension context invalidated')) {
-      console.warn('FocusScroll: Failed to clear events', err);
-    }
+  } catch {
+    // Silently ignore clear failures
   }
 }
 

@@ -179,7 +179,12 @@ export default defineContentScript({
       if (!currentSession) return 0;
       let total = currentSession.accumulatedPlayMs;
       if (currentSession.isPlaying && currentSession.lastPlayStartTime) {
-        total += Date.now() - currentSession.lastPlayStartTime;
+        if (activeVideoEl && activeVideoEl.paused) {
+          currentSession.isPlaying = false;
+          currentSession.lastPlayStartTime = null;
+        } else {
+          total += Date.now() - currentSession.lastPlayStartTime;
+        }
       }
       // If short has completed a full loop, cap the active play timer at the video duration
       if (currentSession.hasCompletedFullLoop && currentSession.videoDurationSec && currentSession.videoDurationSec > 0) {
@@ -468,7 +473,10 @@ export default defineContentScript({
       if (!currentSession) return;
 
       // Sync active play time
-      if (currentSession.isPlaying && currentSession.lastPlayStartTime) {
+      if (activeVideoEl && activeVideoEl.paused) {
+        currentSession.isPlaying = false;
+        currentSession.lastPlayStartTime = null;
+      } else if (currentSession.isPlaying && currentSession.lastPlayStartTime) {
         currentSession.accumulatedPlayMs += Date.now() - currentSession.lastPlayStartTime;
         currentSession.isPlaying = false;
         currentSession.lastPlayStartTime = null;
@@ -477,11 +485,14 @@ export default defineContentScript({
       const endedAt = Date.now();
       let dwellMs = currentSession.accumulatedPlayMs;
 
-      // If short looped, cap dwell time at video duration so looping doesn't inflate timer
+      // If short looped or ended, cap dwell time at video duration so looping doesn't inflate timer
       if (currentSession.hasCompletedFullLoop && currentSession.videoDurationSec && currentSession.videoDurationSec > 0) {
         const maxDurationMs = Math.round(currentSession.videoDurationSec * 1000);
         dwellMs = Math.min(dwellMs, maxDurationMs);
       }
+
+      // Shorts have a maximum duration of 180 seconds on YouTube
+      dwellMs = Math.min(dwellMs, 180000);
 
       // Ignore invalid events (< 500ms active dwell time)
       if (dwellMs >= 500 && currentSession.videoId) {
