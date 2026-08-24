@@ -178,7 +178,6 @@ export default function App() {
     setTimeout(() => setActionFeedback(null), 2000);
   };
 
-  const isTrackingActive = stats.todayCount > 0;
   const calibrationPercent = Math.min(100, Math.round((stats.calibrationCount / stats.calibrationTarget) * 100));
 
   return (

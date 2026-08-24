@@ -1,4 +1,4 @@
-import { getCalibrationInfo, getShortViewEvents, onStorageChanged, saveShortViewEvent } from '@/utils/storage';
+import { getCalibrationInfo, getShortViewEvents, isExtensionContextValid, onStorageChanged, saveShortViewEvent } from '@/utils/storage';
 import type { ShortViewEvent } from '@/utils/types';
 
 interface ActiveShortSession {
@@ -36,20 +36,40 @@ export default defineContentScript({
 
     log('Extension loaded on YouTube (Gentle Intervention Mode)');
 
+    let isTerminated = false;
     let currentSession: ActiveShortSession | null = null;
     let lastHandledVideoId: string | null = null;
     let storedEventsCache: ShortViewEvent[] = [];
     let activeVideoEl: HTMLVideoElement | null = null;
     let lastVideoCurrentTime = 0;
+    let pollInterval: ReturnType<typeof setInterval> | null = null;
+    let domObserver: MutationObserver | null = null;
+    let unsubsStorage: (() => void) | null = null;
 
-    // Initialize events cache and listen for updates
+    // Initialize events cache and listen for updates safely
     getShortViewEvents().then((events) => {
-      storedEventsCache = events;
+      if (!isTerminated) {
+        storedEventsCache = events;
+      }
     });
 
-    onStorageChanged((events) => {
-      storedEventsCache = events;
+    unsubsStorage = onStorageChanged((events) => {
+      if (!isTerminated) {
+        storedEventsCache = events;
+      }
     });
+
+    /**
+     * Check context and cleanly terminate if extension was reloaded / invalidated
+     */
+    function ensureContextValid(): boolean {
+      if (isTerminated) return false;
+      if (!isExtensionContextValid()) {
+        cleanup();
+        return false;
+      }
+      return true;
+    }
 
     /**
      * Subtle cyan message indicator overlay (“Stay a little longer…”)
@@ -575,6 +595,8 @@ export default defineContentScript({
 
     // 2. Intercept scrolling before gate unlocks
     function handleWheel(e: WheelEvent) {
+      if (!ensureContextValid()) return;
+
       // deltaY > 0 indicates scrolling down towards next Short
       if (e.deltaY > 0 && isGateActive()) {
         if (currentSession) {
@@ -594,6 +616,8 @@ export default defineContentScript({
     }
 
     function handleKeyDown(e: KeyboardEvent) {
+      if (!ensureContextValid()) return;
+
       // Do not intercept if user is typing into comments or search bar
       const activeEl = document.activeElement;
       if (
@@ -633,34 +657,46 @@ export default defineContentScript({
     document.addEventListener('keydown', handleKeyDown, { capture: true });
 
     // 3. YouTube Custom SPA Navigation Events
+    const handleNavigationEvent = () => {
+      if (!ensureContextValid()) return;
+      setTimeout(checkShortState, 50);
+    };
+
     const ytEvents = ['yt-navigate-finish', 'yt-page-data-updated', 'yt-action', 'yt-visibility-refresh'];
     ytEvents.forEach((evtName) => {
-      window.addEventListener(evtName, () => {
-        setTimeout(checkShortState, 50);
-      });
-      document.addEventListener(evtName, () => {
-        setTimeout(checkShortState, 50);
-      });
+      window.addEventListener(evtName, handleNavigationEvent);
+      document.addEventListener(evtName, handleNavigationEvent);
     });
 
     // 4. Browser History Events
-    window.addEventListener('popstate', () => setTimeout(checkShortState, 50));
-    window.addEventListener('hashchange', () => setTimeout(checkShortState, 50));
+    const handleHistoryNav = () => {
+      if (!ensureContextValid()) return;
+      setTimeout(checkShortState, 50);
+    };
+    window.addEventListener('popstate', handleHistoryNav);
+    window.addEventListener('hashchange', handleHistoryNav);
 
     // 5. User Interaction fallback triggers
-    window.addEventListener('wheel', () => setTimeout(checkShortState, 100), { passive: true });
-    window.addEventListener('keydown', (e) => {
+    const handleWheelInteraction = () => {
+      if (!ensureContextValid()) return;
+      setTimeout(checkShortState, 100);
+    };
+    const handleKeyInteraction = (e: KeyboardEvent) => {
+      if (!ensureContextValid()) return;
       if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'j', 'k'].includes(e.key)) {
         setTimeout(checkShortState, 150);
       }
-    });
+    };
+    window.addEventListener('wheel', handleWheelInteraction, { passive: true });
+    window.addEventListener('keydown', handleKeyInteraction);
 
     // 6. DOM Mutation Observer
-    const observer = new MutationObserver(() => {
+    domObserver = new MutationObserver(() => {
+      if (!ensureContextValid()) return;
       checkShortState();
     });
 
-    observer.observe(document.documentElement, {
+    domObserver.observe(document.documentElement, {
       childList: true,
       subtree: true,
       attributes: true,
@@ -668,26 +704,86 @@ export default defineContentScript({
     });
 
     // 7. Polling interval (failsafe)
-    setInterval(() => {
+    pollInterval = setInterval(() => {
+      if (!ensureContextValid()) return;
       checkShortState();
     }, 400);
 
     // 8. Page Visibility and Unload Handling
-    document.addEventListener('visibilitychange', () => {
+    const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
         finalizeCurrentSession();
       } else if (document.visibilityState === 'visible') {
-        checkShortState();
+        if (ensureContextValid()) {
+          checkShortState();
+        }
       }
-    });
-
-    window.addEventListener('beforeunload', () => {
+    };
+    const handleUnload = () => {
       finalizeCurrentSession();
-    });
+    };
 
-    window.addEventListener('pagehide', () => {
-      finalizeCurrentSession();
-    });
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', handleUnload);
+    window.addEventListener('pagehide', handleUnload);
+
+    /**
+     * Cleanly tear down content script if context invalidated or unloaded
+     */
+    function cleanup() {
+      if (isTerminated) return;
+      isTerminated = true;
+
+      try {
+        finalizeCurrentSession();
+      } catch {
+        // Ignore session finalization error on cleanup
+      }
+
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+
+      if (domObserver) {
+        domObserver.disconnect();
+        domObserver = null;
+      }
+
+      if (unsubsStorage) {
+        try {
+          unsubsStorage();
+        } catch {
+          // Ignore
+        }
+        unsubsStorage = null;
+      }
+
+      bindActiveVideo(null);
+
+      window.removeEventListener('wheel', handleWheel, { capture: true });
+      document.removeEventListener('wheel', handleWheel, { capture: true });
+      window.removeEventListener('keydown', handleKeyDown, { capture: true });
+      document.removeEventListener('keydown', handleKeyDown, { capture: true });
+
+      ytEvents.forEach((evtName) => {
+        window.removeEventListener(evtName, handleNavigationEvent);
+        document.removeEventListener(evtName, handleNavigationEvent);
+      });
+
+      window.removeEventListener('popstate', handleHistoryNav);
+      window.removeEventListener('hashchange', handleHistoryNav);
+      window.removeEventListener('wheel', handleWheelInteraction);
+      window.removeEventListener('keydown', handleKeyInteraction);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handleUnload);
+      window.removeEventListener('pagehide', handleUnload);
+
+      const indicator = document.getElementById('focusscroll-gentle-indicator');
+      if (indicator && indicator.parentNode) {
+        indicator.parentNode.removeChild(indicator);
+      }
+    }
   },
 });
 
