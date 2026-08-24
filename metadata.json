@@ -1,6 +1,6 @@
 {
   "name": "FocusScroll Extension",
-  "description": "Browser extension with React popup interface and background script",
+  "description": "YouTube Shorts dwell tracker with gentle focus intervention and hidden target gate",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

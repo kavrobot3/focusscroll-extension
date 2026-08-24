@@ -1,4 +1,4 @@
-import { saveShortViewEvent } from '@/utils/storage';
+import { getCalibrationInfo, getShortViewEvents, onStorageChanged, saveShortViewEvent } from '@/utils/storage';
 import type { ShortViewEvent } from '@/utils/types';
 
 interface ActiveShortSession {
@@ -6,6 +6,16 @@ interface ActiveShortSession {
   videoId: string | null;
   url: string;
   startedAt: number;
+  accumulatedPlayMs: number;
+  lastPlayStartTime: number | null;
+  isPlaying: boolean;
+  videoDurationSec: number | null;
+  hasCompletedFullLoop: boolean;
+  calibration: boolean;
+  currentTargetSec: number | null;
+  minimumGateSec: number | null;
+  earlyScrollAttempts: number;
+  gateUnlocked: boolean;
 }
 
 export default defineContentScript({
@@ -24,10 +34,214 @@ export default defineContentScript({
       );
     }
 
-    log('Extension loaded on YouTube');
+    log('Extension loaded on YouTube (Gentle Intervention Mode)');
 
     let currentSession: ActiveShortSession | null = null;
     let lastHandledVideoId: string | null = null;
+    let storedEventsCache: ShortViewEvent[] = [];
+    let activeVideoEl: HTMLVideoElement | null = null;
+    let lastVideoCurrentTime = 0;
+
+    // Initialize events cache and listen for updates
+    getShortViewEvents().then((events) => {
+      storedEventsCache = events;
+    });
+
+    onStorageChanged((events) => {
+      storedEventsCache = events;
+    });
+
+    /**
+     * Subtle cyan message indicator overlay (“Stay a little longer…”)
+     */
+    let indicatorTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    function getOrCreateIndicator(): HTMLElement {
+      let el = document.getElementById('focusscroll-gentle-indicator');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'focusscroll-gentle-indicator';
+        el.textContent = 'Stay a little longer…';
+        Object.assign(el.style, {
+          position: 'fixed',
+          bottom: '76px',
+          left: '50%',
+          transform: 'translateX(-50%) translateY(8px)',
+          backgroundColor: 'rgba(15, 23, 42, 0.88)',
+          color: '#22d3ee',
+          border: '1px solid rgba(6, 182, 212, 0.4)',
+          borderRadius: '9999px',
+          padding: '7px 18px',
+          fontSize: '13px',
+          fontWeight: '500',
+          letterSpacing: '0.01em',
+          boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5), 0 0 12px rgba(6, 182, 212, 0.25)',
+          backdropFilter: 'blur(8px)',
+          webkitBackdropFilter: 'blur(8px)',
+          pointerEvents: 'none',
+          zIndex: '2147483647',
+          opacity: '0',
+          transition: 'opacity 0.25s cubic-bezier(0.16, 1, 0.3, 1), transform 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+          fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        });
+        document.body.appendChild(el);
+      }
+      return el;
+    }
+
+    function showGentleMessage() {
+      const el = getOrCreateIndicator();
+      el.style.opacity = '1';
+      el.style.transform = 'translateX(-50%) translateY(0px)';
+
+      if (indicatorTimeout) {
+        clearTimeout(indicatorTimeout);
+      }
+
+      indicatorTimeout = setTimeout(() => {
+        el.style.opacity = '0';
+        el.style.transform = 'translateX(-50%) translateY(8px)';
+      }, 1600);
+    }
+
+    /**
+     * Check if active video or renderer is an advertisement
+     */
+    function isAdActive(): boolean {
+      // 1. YouTube Player Ad classes
+      const player = document.querySelector('.html5-video-player');
+      if (player && (player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting'))) {
+        return true;
+      }
+
+      // 2. Active Reel Video Renderer Ad attributes & elements
+      const activeRenderer =
+        document.querySelector('ytd-reel-video-renderer[is-active]') ||
+        document.querySelector('ytd-reel-video-renderer[active]') ||
+        document.querySelector('ytd-reel-video-renderer:not([aria-hidden="true"])');
+
+      if (activeRenderer) {
+        if (
+          activeRenderer.hasAttribute('is-ad') ||
+          activeRenderer.getAttribute('is-ad') === 'true' ||
+          activeRenderer.classList.contains('ytd-shorts-ad-renderer')
+        ) {
+          return true;
+        }
+
+        // Check for ad badges or sponsored labels in active renderer
+        const adElements = activeRenderer.querySelectorAll(
+          'ytd-ad-badge-renderer, ytd-ad-slot-renderer, ytd-in-feed-ad-layout-renderer, .ytd-reel-ad-header-renderer, .ytp-ad-badge, .ytp-ad-text, [aria-label*="Sponsored"], [aria-label*="Promoted"]'
+        );
+        if (adElements.length > 0) {
+          return true;
+        }
+
+        const badgeText = activeRenderer.querySelector('#channel-name, .ytd-channel-name, #text-container');
+        if (badgeText && /^(sponsored|ad|promoted)$/i.test(badgeText.textContent?.trim() || '')) {
+          return true;
+        }
+      }
+
+      // 3. Global ad overlay checks
+      const adOverlay = document.querySelector('.ytp-ad-player-overlay, .ytp-ad-overlay-container');
+      if (adOverlay && (adOverlay as HTMLElement).offsetParent !== null) {
+        return true;
+      }
+
+      return false;
+    }
+
+    /**
+     * Calculate active elapsed playback milliseconds
+     */
+    function getActiveElapsedPlayMs(): number {
+      if (!currentSession) return 0;
+      let total = currentSession.accumulatedPlayMs;
+      if (currentSession.isPlaying && currentSession.lastPlayStartTime) {
+        total += Date.now() - currentSession.lastPlayStartTime;
+      }
+      // If short has completed a full loop, cap the active play timer at the video duration
+      if (currentSession.hasCompletedFullLoop && currentSession.videoDurationSec && currentSession.videoDurationSec > 0) {
+        const maxDurationMs = Math.round(currentSession.videoDurationSec * 1000);
+        return Math.min(total, maxDurationMs);
+      }
+      return total;
+    }
+
+    /**
+     * Check if the gate is currently active and blocking navigation to the next short
+     */
+    function isGateActive(): boolean {
+      if (!currentSession) return false;
+      if (currentSession.calibration) return false;
+      if (currentSession.gateUnlocked) return false;
+
+      // 1. Never restrict scrolling on ads or sponsored content
+      if (isAdActive()) {
+        currentSession.gateUnlocked = true;
+        return false;
+      }
+
+      // 2. Allow user to scroll if more than 4 times attempted to skip
+      if (currentSession.earlyScrollAttempts >= 4) {
+        currentSession.gateUnlocked = true;
+        return false;
+      }
+
+      // 3. If short has already completed full watch or looped, gate is immediately unlocked
+      if (currentSession.hasCompletedFullLoop) {
+        currentSession.gateUnlocked = true;
+        return false;
+      }
+
+      // 4. Check active video element directly
+      const video = getActiveVideoElement();
+      if (video) {
+        if (video.ended) {
+          currentSession.hasCompletedFullLoop = true;
+          currentSession.gateUnlocked = true;
+          return false;
+        }
+
+        const duration = video.duration;
+        if (duration && !isNaN(duration) && duration > 0) {
+          currentSession.videoDurationSec = duration;
+
+          // If video reached end of playback
+          if (video.currentTime >= duration - 0.4) {
+            currentSession.hasCompletedFullLoop = true;
+            currentSession.gateUnlocked = true;
+            return false;
+          }
+
+          // If target or minimum gate > short length:
+          // Effective gate must never exceed the video length
+          const effectiveGateSec = Math.min(
+            currentSession.minimumGateSec ?? 2,
+            Math.max(1, duration - 0.2)
+          );
+
+          const activePlaySec = getActiveElapsedPlayMs() / 1000;
+          if (activePlaySec >= effectiveGateSec) {
+            currentSession.gateUnlocked = true;
+            return false;
+          }
+
+          return true;
+        }
+      }
+
+      const minGate = currentSession.minimumGateSec ?? 2;
+      const elapsedSec = getActiveElapsedPlayMs() / 1000;
+
+      if (elapsedSec >= minGate) {
+        currentSession.gateUnlocked = true;
+        return false;
+      }
+
+      return true;
+    }
 
     /**
      * Extract Video ID from a URL string
@@ -54,14 +268,12 @@ export default defineContentScript({
      * Inspect active DOM element on YouTube Shorts to retrieve current active Short video ID
      */
     function extractShortsVideoIdFromDom(): string | null {
-      // 1. Look for active reel renderer
       const activeRenderer =
         document.querySelector('ytd-reel-video-renderer[is-active]') ||
         document.querySelector('ytd-reel-video-renderer[active]') ||
         document.querySelector('ytd-reel-video-renderer:not([aria-hidden="true"])');
 
       if (activeRenderer) {
-        // Check attributes on renderer
         const attrId =
           activeRenderer.getAttribute('video-id') ||
           activeRenderer.getAttribute('data-video-id') ||
@@ -70,7 +282,6 @@ export default defineContentScript({
           return attrId;
         }
 
-        // Check internal links
         const link = activeRenderer.querySelector('a[href*="/shorts/"]');
         if (link) {
           const href = link.getAttribute('href');
@@ -80,16 +291,132 @@ export default defineContentScript({
           }
         }
 
-        // Check video element currentSrc or media
         const video = activeRenderer.querySelector('video');
         if (video) {
-          // If video exists inside active renderer, URL usually reflects it
           const fromUrl = extractShortsVideoIdFromUrl(window.location.href);
           if (fromUrl) return fromUrl;
         }
       }
 
       return null;
+    }
+
+    /**
+     * Find active <video> element on the page
+     */
+    function getActiveVideoElement(): HTMLVideoElement | null {
+      const activeRenderer =
+        document.querySelector('ytd-reel-video-renderer[is-active]') ||
+        document.querySelector('ytd-reel-video-renderer[active]') ||
+        document.querySelector('ytd-reel-video-renderer:not([aria-hidden="true"])');
+
+      if (activeRenderer) {
+        const video = activeRenderer.querySelector('video');
+        if (video) return video;
+      }
+
+      return document.querySelector('video');
+    }
+
+    /**
+     * Video Event Handlers for active playback & loop detection
+     */
+    function handleVideoPlay() {
+      if (!currentSession) return;
+      if (!currentSession.isPlaying) {
+        currentSession.isPlaying = true;
+        currentSession.lastPlayStartTime = Date.now();
+      }
+    }
+
+    function handleVideoPause() {
+      if (!currentSession) return;
+      if (currentSession.isPlaying) {
+        if (currentSession.lastPlayStartTime) {
+          currentSession.accumulatedPlayMs += Date.now() - currentSession.lastPlayStartTime;
+        }
+        currentSession.isPlaying = false;
+        currentSession.lastPlayStartTime = null;
+      }
+    }
+
+    function handleVideoEnded() {
+      if (!currentSession) return;
+      currentSession.hasCompletedFullLoop = true;
+      currentSession.gateUnlocked = true;
+    }
+
+    function handleVideoTimeUpdate() {
+      if (!currentSession || !activeVideoEl) return;
+
+      const duration = activeVideoEl.duration;
+      const currentTime = activeVideoEl.currentTime;
+
+      if (duration && !isNaN(duration) && duration > 0) {
+        currentSession.videoDurationSec = duration;
+
+        // 1. Reached end of video
+        if (currentTime >= duration - 0.4 || activeVideoEl.ended) {
+          currentSession.hasCompletedFullLoop = true;
+          currentSession.gateUnlocked = true;
+        }
+
+        // 2. Loop detected (currentTime jumped from near end back to start)
+        if (lastVideoCurrentTime > Math.max(1, duration - 1.5) && currentTime < 1.0) {
+          currentSession.hasCompletedFullLoop = true;
+          currentSession.gateUnlocked = true;
+        }
+      }
+
+      lastVideoCurrentTime = currentTime;
+    }
+
+    function bindActiveVideo(video: HTMLVideoElement | null) {
+      if (activeVideoEl === video) {
+        if (video && currentSession) {
+          // Sync play state
+          if (!video.paused && !currentSession.isPlaying) {
+            handleVideoPlay();
+          } else if (video.paused && currentSession.isPlaying) {
+            handleVideoPause();
+          }
+        }
+        return;
+      }
+
+      if (activeVideoEl) {
+        activeVideoEl.removeEventListener('play', handleVideoPlay);
+        activeVideoEl.removeEventListener('playing', handleVideoPlay);
+        activeVideoEl.removeEventListener('pause', handleVideoPause);
+        activeVideoEl.removeEventListener('ended', handleVideoEnded);
+        activeVideoEl.removeEventListener('timeupdate', handleVideoTimeUpdate);
+        activeVideoEl.removeEventListener('waiting', handleVideoPause);
+      }
+
+      activeVideoEl = video;
+      lastVideoCurrentTime = 0;
+
+      if (activeVideoEl) {
+        activeVideoEl.addEventListener('play', handleVideoPlay);
+        activeVideoEl.addEventListener('playing', handleVideoPlay);
+        activeVideoEl.addEventListener('pause', handleVideoPause);
+        activeVideoEl.addEventListener('ended', handleVideoEnded);
+        activeVideoEl.addEventListener('timeupdate', handleVideoTimeUpdate);
+        activeVideoEl.addEventListener('waiting', handleVideoPause);
+
+        if (currentSession) {
+          if (!activeVideoEl.paused) {
+            currentSession.isPlaying = true;
+            currentSession.lastPlayStartTime = Date.now();
+          } else {
+            currentSession.isPlaying = false;
+            currentSession.lastPlayStartTime = null;
+          }
+          if (activeVideoEl.duration && !isNaN(activeVideoEl.duration)) {
+            currentSession.videoDurationSec = activeVideoEl.duration;
+          }
+        }
+      }
     }
 
     /**
@@ -108,7 +435,6 @@ export default defineContentScript({
         if (idFromDom) {
           return { videoId: idFromDom, isShorts: true };
         }
-        // User is on /shorts without ID yet (e.g. initial /shorts load before redirect)
         return { videoId: null, isShorts: true };
       }
 
@@ -121,11 +447,30 @@ export default defineContentScript({
     function finalizeCurrentSession() {
       if (!currentSession) return;
 
-      const endedAt = Date.now();
-      const dwellMs = endedAt - currentSession.startedAt;
+      // Sync active play time
+      if (currentSession.isPlaying && currentSession.lastPlayStartTime) {
+        currentSession.accumulatedPlayMs += Date.now() - currentSession.lastPlayStartTime;
+        currentSession.isPlaying = false;
+        currentSession.lastPlayStartTime = null;
+      }
 
-      // Ignore invalid events (< 500ms dwell time)
+      const endedAt = Date.now();
+      let dwellMs = currentSession.accumulatedPlayMs;
+
+      // If short looped, cap dwell time at video duration so looping doesn't inflate timer
+      if (currentSession.hasCompletedFullLoop && currentSession.videoDurationSec && currentSession.videoDurationSec > 0) {
+        const maxDurationMs = Math.round(currentSession.videoDurationSec * 1000);
+        dwellMs = Math.min(dwellMs, maxDurationMs);
+      }
+
+      // Ignore invalid events (< 500ms active dwell time)
       if (dwellMs >= 500 && currentSession.videoId) {
+        const dwellSec = dwellMs / 1000;
+        const gateUnlocked =
+          currentSession.calibration ||
+          currentSession.hasCompletedFullLoop ||
+          (dwellSec >= (currentSession.minimumGateSec || 2));
+
         const event: ShortViewEvent = {
           id: currentSession.id,
           videoId: currentSession.videoId,
@@ -134,12 +479,20 @@ export default defineContentScript({
           endedAt,
           dwellMs,
           timestamp: new Date(endedAt).toISOString(),
+          calibration: currentSession.calibration,
+          currentTargetSec: currentSession.currentTargetSec,
+          minimumGateSec: currentSession.minimumGateSec,
+          earlyScrollAttempts: currentSession.earlyScrollAttempts,
+          gateUnlocked,
         };
 
         saveShortViewEvent(event);
-        log(`Event saved: #${event.videoId} (${(dwellMs / 1000).toFixed(1)}s dwell time)`);
+        log(
+          `Event saved: #${event.videoId} (${(dwellMs / 1000).toFixed(1)}s active dwell, ` +
+          `calib=${event.calibration}, earlyAttempts=${event.earlyScrollAttempts}, gateUnlocked=${gateUnlocked})`
+        );
       } else if (currentSession.videoId) {
-        log(`Ignored quick swipe (<500ms): #${currentSession.videoId} (${dwellMs}ms)`);
+        log(`Ignored quick swipe (<500ms active): #${currentSession.videoId} (${dwellMs}ms)`);
       }
 
       currentSession = null;
@@ -157,9 +510,14 @@ export default defineContentScript({
           log('User left YouTube Shorts');
           finalizeCurrentSession();
           lastHandledVideoId = null;
+          bindActiveVideo(null);
         }
         return;
       }
+
+      // If we are on Shorts, keep active video element bound
+      const videoEl = getActiveVideoElement();
+      bindActiveVideo(videoEl);
 
       // If we are on Shorts but haven't resolved a specific video ID yet
       if (!videoId) {
@@ -176,23 +534,105 @@ export default defineContentScript({
         finalizeCurrentSession();
       }
 
+      // Calculate calibration & target configuration for this new Short
+      const calibInfo = getCalibrationInfo(storedEventsCache);
+      const isCalibration = !calibInfo.isCalibrated;
+      const currentTargetSec = calibInfo.isCalibrated ? calibInfo.currentTargetSec : null;
+      const minimumGateSec = calibInfo.isCalibrated ? calibInfo.minimumGateSec : null;
+
       // Start new short session
       lastHandledVideoId = videoId;
       const now = Date.now();
+      const isPlaying = videoEl ? !videoEl.paused : true;
+      const videoDurationSec = videoEl && videoEl.duration && !isNaN(videoEl.duration) ? videoEl.duration : null;
+
       currentSession = {
         id: `${videoId}-${now}-${Math.random().toString(36).slice(2, 7)}`,
         videoId,
         url: window.location.href,
         startedAt: now,
+        accumulatedPlayMs: 0,
+        lastPlayStartTime: isPlaying ? now : null,
+        isPlaying,
+        videoDurationSec,
+        hasCompletedFullLoop: false,
+        calibration: isCalibration,
+        currentTargetSec,
+        minimumGateSec,
+        earlyScrollAttempts: 0,
+        gateUnlocked: isCalibration, // Unlocked immediately during calibration
       };
 
-      log(`Active Short: #${videoId} - tracking started...`);
+      if (isCalibration) {
+        log(`Active Short #${videoId} [Calibration ${calibInfo.calibrationCount + 1}/6]: Unrestricted`);
+      } else {
+        log(`Active Short #${videoId} [Intervention]: Gate ${minimumGateSec}s (Target: ${currentTargetSec}s)`);
+      }
     }
 
     // 1. Initial check
     checkShortState();
 
-    // 2. YouTube Custom SPA Navigation Events
+    // 2. Intercept scrolling before gate unlocks
+    function handleWheel(e: WheelEvent) {
+      // deltaY > 0 indicates scrolling down towards next Short
+      if (e.deltaY > 0 && isGateActive()) {
+        if (currentSession) {
+          currentSession.earlyScrollAttempts += 1;
+          if (currentSession.earlyScrollAttempts > 4) {
+            currentSession.gateUnlocked = true;
+            return; // Allow scroll through
+          }
+        }
+
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        showGentleMessage();
+        return false;
+      }
+    }
+
+    function handleKeyDown(e: KeyboardEvent) {
+      // Do not intercept if user is typing into comments or search bar
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          (activeEl as HTMLElement).isContentEditable ||
+          activeEl.getAttribute('role') === 'textbox')
+      ) {
+        return;
+      }
+
+      // Next Short navigation keys: ArrowDown, PageDown, 'j'
+      // Normal browser controls (Space/k for pause, ArrowUp/PageUp for previous, m for mute, etc.) remain allowed
+      if ((e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === 'j') && isGateActive()) {
+        if (currentSession) {
+          currentSession.earlyScrollAttempts += 1;
+          if (currentSession.earlyScrollAttempts > 4) {
+            currentSession.gateUnlocked = true;
+            return; // Allow navigation through
+          }
+        }
+
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        showGentleMessage();
+        return false;
+      }
+    }
+
+    // Capture phase listeners ensure we intercept before YouTube Shorts container handlers
+    window.addEventListener('wheel', handleWheel, { capture: true, passive: false });
+    document.addEventListener('wheel', handleWheel, { capture: true, passive: false });
+
+    window.addEventListener('keydown', handleKeyDown, { capture: true });
+    document.addEventListener('keydown', handleKeyDown, { capture: true });
+
+    // 3. YouTube Custom SPA Navigation Events
     const ytEvents = ['yt-navigate-finish', 'yt-page-data-updated', 'yt-action', 'yt-visibility-refresh'];
     ytEvents.forEach((evtName) => {
       window.addEventListener(evtName, () => {
@@ -203,11 +643,11 @@ export default defineContentScript({
       });
     });
 
-    // 3. Browser History Events
+    // 4. Browser History Events
     window.addEventListener('popstate', () => setTimeout(checkShortState, 50));
     window.addEventListener('hashchange', () => setTimeout(checkShortState, 50));
 
-    // 4. User Interaction triggers (scrolling / arrow keys / trackpad)
+    // 5. User Interaction fallback triggers
     window.addEventListener('wheel', () => setTimeout(checkShortState, 100), { passive: true });
     window.addEventListener('keydown', (e) => {
       if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'j', 'k'].includes(e.key)) {
@@ -215,7 +655,7 @@ export default defineContentScript({
       }
     });
 
-    // 5. DOM Mutation Observer
+    // 6. DOM Mutation Observer
     const observer = new MutationObserver(() => {
       checkShortState();
     });
@@ -227,12 +667,12 @@ export default defineContentScript({
       attributeFilter: ['is-active', 'active', 'aria-hidden', 'href', 'video-id'],
     });
 
-    // 6. Polling interval (failsafe)
+    // 7. Polling interval (failsafe)
     setInterval(() => {
       checkShortState();
     }, 400);
 
-    // 7. Page Visibility and Unload Handling
+    // 8. Page Visibility and Unload Handling
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') {
         finalizeCurrentSession();
@@ -250,3 +690,4 @@ export default defineContentScript({
     });
   },
 });
+
