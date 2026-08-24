@@ -1,3 +1,6 @@
 export default defineBackground(() => {
-  console.log('Hello background!', { id: browser.runtime.id });
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[FocusScroll] Background service worker initialized');
+  }
 });
+

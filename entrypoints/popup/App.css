@@ -1,42 +1,328 @@
-#root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
+.popup-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #1e293b;
+  padding-bottom: 10px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.brand-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #06b6d4 0%, #0284c7 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 13px;
+  box-shadow: 0 0 12px rgba(6, 182, 212, 0.35);
+}
+
+.brand-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: #f8fafc;
+  letter-spacing: -0.01em;
+}
+
+.brand-subtitle {
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+.status-badge {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 9999px;
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.status-badge.active {
+  background-color: rgba(6, 182, 212, 0.14);
+  border: 1px solid rgba(6, 182, 212, 0.3);
+  color: #22d3ee;
+}
+
+.status-badge.calibrating {
+  background-color: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  color: #fbbf24;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: currentColor;
+  animation: pulse-dot 2s infinite ease-in-out;
+}
+
+@keyframes pulse-dot {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.85);
+  }
+}
+
+/* Calibration Card */
+.calibration-card {
+  background-color: #111827;
+  border: 1px solid #1f2937;
+  border-radius: 9px;
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.calibration-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.calibration-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.calibration-ratio {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #22d3ee;
+}
+
+.calibration-bar-bg {
+  width: 100%;
+  height: 5px;
+  background-color: #1e293b;
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.calibration-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #06b6d4 0%, #38bdf8 100%);
+  border-radius: 9999px;
+  transition: width 0.3s ease;
+}
+
+.calibration-desc {
+  font-size: 10px;
+  color: #94a3b8;
+  line-height: 1.35;
+}
+
+/* Stats Grid */
+.stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+
+.stat-card {
+  background-color: #131b26;
+  border: 1px solid #1e293b;
+  border-radius: 9px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stat-card.highlight {
+  border-color: rgba(6, 182, 212, 0.3);
+  background: linear-gradient(180deg, rgba(6, 182, 212, 0.09) 0%, #131b26 100%);
+}
+
+.stat-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.stat-value {
+  font-size: 17px;
+  font-weight: 700;
+  color: #f1f5f9;
+  letter-spacing: -0.02em;
+}
+
+.stat-value.cyan {
+  color: #22d3ee;
+}
+
+.stat-sub {
+  font-size: 9.5px;
+  color: #64748b;
+}
+
+/* Recent Section */
+.recent-section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.recent-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: #94a3b8;
+  padding: 0 2px;
+}
+
+.recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 105px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.recent-list::-webkit-scrollbar {
+  width: 3px;
+}
+
+.recent-list::-webkit-scrollbar-thumb {
+  background-color: #1e293b;
+  border-radius: 4px;
+}
+
+.recent-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 10.5px;
+}
+
+.recent-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.recent-video-id {
+  font-family: monospace;
+  color: #cbd5e1;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-tag {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.recent-tag.calib {
+  background-color: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+}
+
+.recent-tag.gated {
+  background-color: rgba(6, 182, 212, 0.15);
+  color: #22d3ee;
+}
+
+.recent-dwell {
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.empty-state {
   text-align: center;
+  padding: 12px 8px;
+  font-size: 11px;
+  color: #64748b;
+  background-color: #0f172a;
+  border: 1px dashed #1e293b;
+  border-radius: 7px;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #54bc4ae0);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
+/* Actions */
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
 }
 
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+.btn-clear {
+  width: 100%;
+  padding: 7px 11px;
+  background-color: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 7px;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
-  }
+.btn-clear:hover {
+  background-color: #334155;
+  border-color: #475569;
+  color: #f8fafc;
 }
 
-.card {
-  padding: 2em;
+.btn-simulate {
+  width: 100%;
+  padding: 5px 9px;
+  background-color: rgba(6, 182, 212, 0.08);
+  color: #22d3ee;
+  border: 1px dashed rgba(6, 182, 212, 0.35);
+  border-radius: 6px;
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: background-color 0.15s;
 }
 
-.read-the-docs {
-  color: #888;
+.btn-simulate:hover {
+  background-color: rgba(6, 182, 212, 0.18);
+}
+
+.footer-note {
+  font-size: 9px;
+  color: #64748b;
+  text-align: center;
 }

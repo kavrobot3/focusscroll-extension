@@ -5,13 +5,14 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "wxt",
+    "dev": "wxt --host 0.0.0.0 --port 3000",
     "dev:firefox": "wxt -b firefox",
-    "build": "wxt build",
+    "build": "wxt build && node scripts/prepare-dist.js",
     "build:firefox": "wxt build -b firefox",
     "zip": "wxt zip",
     "zip:firefox": "wxt zip -b firefox",
     "compile": "tsc --noEmit",
+    "lint": "tsc --noEmit",
     "postinstall": "wxt prepare"
   },
   "dependencies": {
@@ -19,6 +20,7 @@
     "react-dom": "^19.2.4"
   },
   "devDependencies": {
+    "@types/chrome": "^0.2.7",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@wxt-dev/module-react": "^1.1.5",
