@@ -1,6 +1,14 @@
-import type { ShortViewEvent, ShortsStats, CalibrationInfo } from './types';
+import {
+  DEFAULT_FOCUS_SETTINGS,
+  type CalibrationInfo,
+  type FocusSettings,
+  type ShortsStats,
+  type ShortViewEvent,
+} from './types';
 
+export { DEFAULT_FOCUS_SETTINGS } from './types';
 export const STORAGE_KEY_EVENTS = 'focusscroll_short_view_events';
+export const STORAGE_KEY_SETTINGS = 'focusscroll_user_settings';
 export const CALIBRATION_COUNT_REQUIRED = 3;
 
 /**
@@ -52,6 +60,106 @@ function saveToLocalStorage(events: ShortViewEvent[]): void {
 }
 
 /**
+ * Retrieve user FocusSettings
+ */
+export async function getFocusSettings(): Promise<FocusSettings> {
+  if (isExtensionContextValid()) {
+    try {
+      const data = await chrome.storage.local.get(STORAGE_KEY_SETTINGS);
+      if (data[STORAGE_KEY_SETTINGS]) {
+        return { ...DEFAULT_FOCUS_SETTINGS, ...data[STORAGE_KEY_SETTINGS] };
+      }
+    } catch {
+      // Fall through to localStorage
+    }
+  }
+
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = localStorage.getItem(STORAGE_KEY_SETTINGS);
+      if (raw) {
+        return { ...DEFAULT_FOCUS_SETTINGS, ...JSON.parse(raw) };
+      }
+    }
+  } catch {
+    // Ignore localStorage access error
+  }
+
+  return DEFAULT_FOCUS_SETTINGS;
+}
+
+/**
+ * Save user FocusSettings
+ */
+export async function saveFocusSettings(settings: FocusSettings): Promise<void> {
+  if (isExtensionContextValid()) {
+    try {
+      await chrome.storage.local.set({ [STORAGE_KEY_SETTINGS]: settings });
+    } catch {
+      // Fall through to localStorage
+    }
+  }
+
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
+      window.dispatchEvent(new CustomEvent('focusscroll_settings_updated', { detail: settings }));
+    }
+  } catch {
+    // Ignore localStorage write error
+  }
+}
+
+/**
+ * Subscribe to settings changes
+ */
+export function onSettingsChanged(callback: (settings: FocusSettings) => void): () => void {
+  if (isExtensionContextValid()) {
+    try {
+      const listener = (
+        changes: { [key: string]: chrome.storage.StorageChange },
+        areaName: string
+      ) => {
+        if (areaName === 'local' && changes[STORAGE_KEY_SETTINGS]) {
+          callback({
+            ...DEFAULT_FOCUS_SETTINGS,
+            ...(changes[STORAGE_KEY_SETTINGS].newValue as FocusSettings),
+          });
+        }
+      };
+      chrome.storage.onChanged.addListener(listener);
+      return () => {
+        try {
+          if (isExtensionContextValid()) {
+            chrome.storage.onChanged.removeListener(listener);
+          }
+        } catch {
+          // Ignore
+        }
+      };
+    } catch {
+      // Ignore
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    const handler = (e: Event) => {
+      const customEv = e as CustomEvent<FocusSettings>;
+      if (customEv.detail) {
+        callback(customEv.detail);
+      } else {
+        getFocusSettings().then(callback);
+      }
+    };
+    window.addEventListener('focusscroll_settings_updated', handler);
+    return () => {
+      window.removeEventListener('focusscroll_settings_updated', handler);
+    };
+  }
+  return () => {};
+}
+
+/**
  * Retrieve all recorded ShortViewEvents with context-invalidation safety
  */
 export async function getShortViewEvents(): Promise<ShortViewEvent[]> {
@@ -68,9 +176,36 @@ export async function getShortViewEvents(): Promise<ShortViewEvent[]> {
 }
 
 /**
- * Compute calibration details and current hidden focus target from recorded events
+ * Get effective target progression rate in seconds per Short
  */
-export function getCalibrationInfo(events: ShortViewEvent[]): CalibrationInfo {
+export function getProgressionRate(settings: FocusSettings): number {
+  switch (settings.progressionSpeed) {
+    case 'fixed':
+      return 0;
+    case 'gentle':
+      // Gentle: lower increase speed (+0.15s per Short)
+      return 0.15;
+    case 'normal':
+      return 0.4;
+    case 'brisk':
+      return 0.8;
+    case 'custom':
+      return Math.max(0, Number(settings.customIncreasePerShortSec) || 0.15);
+    default:
+      return 0.15;
+  }
+}
+
+/**
+ * Compute calibration details and current focus target from recorded events & settings
+ */
+export function getCalibrationInfo(
+  events: ShortViewEvent[],
+  customSettings?: FocusSettings
+): CalibrationInfo {
+  const settings: FocusSettings = customSettings || DEFAULT_FOCUS_SETTINGS;
+  const progressionRate = getProgressionRate(settings);
+
   // Sort chronologically ascending by startedAt to identify calibration sessions
   const chronological = [...events].sort((a, b) => a.startedAt - b.startedAt);
   const validEvents = chronological.filter((e) => e.dwellMs >= 400);
@@ -79,21 +214,57 @@ export function getCalibrationInfo(events: ShortViewEvent[]): CalibrationInfo {
   const count = calibrationEvents.length;
   const isCalibrated = count >= CALIBRATION_COUNT_REQUIRED;
 
+  // Number of post-calibration events to compute progressive increase
+  const postCalibCount = Math.max(0, validEvents.length - CALIBRATION_COUNT_REQUIRED);
+
   if (count === 0) {
+    const initialTarget = settings.targetMode === 'manual'
+      ? settings.manualTargetSec
+      : 8;
+    const initialGate = settings.gateMode === 'fixed'
+      ? Math.min(initialTarget, settings.manualGateSec)
+      : Math.max(2, Math.min(10, initialTarget - 3));
+
     return {
       isCalibrated: false,
       calibrationCount: 0,
       calibrationTarget: CALIBRATION_COUNT_REQUIRED,
       baselineDwellMs: 4000,
       baselineDwellSec: 4.0,
-      currentTargetSec: 8,
-      minimumGateSec: 4,
+      currentTargetSec: initialTarget,
+      minimumGateSec: initialGate,
+      progressionRateSec: progressionRate,
+      settings,
     };
   }
 
   const sumDwellMs = calibrationEvents.reduce((acc, ev) => acc + ev.dwellMs, 0);
   const baselineDwellMs = Math.round(sumDwellMs / count);
   const baselineDwellSec = Number((baselineDwellMs / 1000).toFixed(1));
+
+  // Determine base target before progression
+  let baseTargetSec: number;
+  if (settings.targetMode === 'manual') {
+    baseTargetSec = Math.max(4, settings.manualTargetSec);
+  } else {
+    // Auto mode: slightly above baseline dwell
+    baseTargetSec = Math.max(5, Math.round(baselineDwellSec * 1.15));
+  }
+
+  // Progressive target increment based on progression rate and post-calibration events
+  const progressiveIncrement = postCalibCount * progressionRate;
+  const maxCap = Math.max(baseTargetSec, settings.maxTargetCapSec || 30);
+  const calculatedTarget = Math.min(maxCap, baseTargetSec + progressiveIncrement);
+  const currentTargetSec = Number(calculatedTarget.toFixed(1));
+
+  // Calculate minimum gate
+  let minimumGateSec: number;
+  if (settings.gateMode === 'fixed') {
+    minimumGateSec = Math.min(currentTargetSec, Math.max(1, settings.manualGateSec));
+  } else {
+    // Auto gate: target minus 3 seconds (bounded safely)
+    minimumGateSec = Math.max(2, Math.min(20, Math.round(currentTargetSec - 3)));
+  }
 
   if (!isCalibrated) {
     return {
@@ -102,17 +273,12 @@ export function getCalibrationInfo(events: ShortViewEvent[]): CalibrationInfo {
       calibrationTarget: CALIBRATION_COUNT_REQUIRED,
       baselineDwellMs,
       baselineDwellSec,
-      // Provide an immediate active gentle gate even while building calibration baseline
-      currentTargetSec: Math.max(6, Math.round(baselineDwellSec * 1.3)),
-      minimumGateSec: Math.max(3, Math.min(6, Math.round(baselineDwellSec * 0.8))),
+      currentTargetSec: Math.max(5, baseTargetSec),
+      minimumGateSec: Math.min(3, minimumGateSec),
+      progressionRateSec: progressionRate,
+      settings,
     };
   }
-
-  // Once calibrated:
-  // Set currentTargetSec based on baseline average
-  const currentTargetSec = Math.max(6, Math.round(baselineDwellSec * 1.2));
-  // Minimum gate: target - 3 seconds, bounded between 3s and 12s
-  const minimumGateSec = Math.max(3, Math.min(12, currentTargetSec - 3));
 
   return {
     isCalibrated: true,
@@ -122,6 +288,8 @@ export function getCalibrationInfo(events: ShortViewEvent[]): CalibrationInfo {
     baselineDwellSec,
     currentTargetSec,
     minimumGateSec,
+    progressionRateSec: progressionRate,
+    settings,
   };
 }
 
@@ -215,9 +383,59 @@ export function onStorageChanged(callback: (events: ShortViewEvent[]) => void): 
 }
 
 /**
+ * Hard reload the extension and all open YouTube tabs to prevent stale state or errors
+ */
+export async function hardReloadExtension(): Promise<{ success: boolean; reloadedTabs: number }> {
+  let reloadedTabs = 0;
+
+  try {
+    // 1. Reload any active YouTube tabs if chrome.tabs is available
+    if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query) {
+      try {
+        const ytTabs = await chrome.tabs.query({ url: ['*://*.youtube.com/*', '*://youtube.com/*'] });
+        for (const tab of ytTabs) {
+          if (tab.id) {
+            chrome.tabs.reload(tab.id);
+            reloadedTabs++;
+          }
+        }
+      } catch (err) {
+        console.warn('Could not reload YouTube tabs:', err);
+      }
+    }
+
+    // 2. Hard reload extension runtime if available
+    if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.reload === 'function') {
+      setTimeout(() => {
+        try {
+          chrome.runtime.reload();
+        } catch (err) {
+          console.warn('chrome.runtime.reload failed:', err);
+        }
+      }, 300);
+    }
+
+    // 3. Reload current popup window context
+    if (typeof window !== 'undefined' && window.location) {
+      setTimeout(() => {
+        window.location.reload();
+      }, 400);
+    }
+
+    return { success: true, reloadedTabs };
+  } catch {
+    return { success: false, reloadedTabs: 0 };
+  }
+}
+
+/**
  * Calculate aggregate statistics for today's viewing events and calibration
  */
-export function calculateShortsStats(events: ShortViewEvent[]): ShortsStats {
+export function calculateShortsStats(
+  events: ShortViewEvent[],
+  customSettings?: FocusSettings
+): ShortsStats {
+  const settings = customSettings || DEFAULT_FOCUS_SETTINGS;
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
 
@@ -236,7 +454,7 @@ export function calculateShortsStats(events: ShortViewEvent[]): ShortsStats {
   }
 
   const avgDwellMs = todayCount > 0 ? Math.round(totalDwellMsToday / todayCount) : 0;
-  const calib = getCalibrationInfo(events);
+  const calib = getCalibrationInfo(events, settings);
 
   return {
     todayCount,
@@ -251,6 +469,7 @@ export function calculateShortsStats(events: ShortViewEvent[]): ShortsStats {
     minimumGateSec: calib.minimumGateSec,
     totalEarlyScrollAttempts,
     events,
+    settings,
   };
 }
 

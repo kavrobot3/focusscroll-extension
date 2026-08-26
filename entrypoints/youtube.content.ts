@@ -1,5 +1,14 @@
-import { getCalibrationInfo, getShortViewEvents, isExtensionContextValid, onStorageChanged, saveShortViewEvent } from '@/utils/storage';
-import type { ShortViewEvent } from '@/utils/types';
+import {
+  DEFAULT_FOCUS_SETTINGS,
+  getCalibrationInfo,
+  getFocusSettings,
+  getShortViewEvents,
+  isExtensionContextValid,
+  onSettingsChanged,
+  onStorageChanged,
+  saveShortViewEvent,
+} from '@/utils/storage';
+import type { FocusSettings, ShortViewEvent } from '@/utils/types';
 
 interface ActiveShortSession {
   id: string;
@@ -40,23 +49,48 @@ export default defineContentScript({
     let currentSession: ActiveShortSession | null = null;
     let lastHandledVideoId: string | null = null;
     let storedEventsCache: ShortViewEvent[] = [];
+    let userSettingsCache: FocusSettings = DEFAULT_FOCUS_SETTINGS;
     let activeVideoEl: HTMLVideoElement | null = null;
     let lastVideoCurrentTime = 0;
     let pollInterval: ReturnType<typeof setInterval> | null = null;
     let domObserver: MutationObserver | null = null;
     let unsubsStorage: (() => void) | null = null;
+    let unsubsSettings: (() => void) | null = null;
     let lastAttemptTimestamp = 0;
 
-    // Initialize events cache and listen for updates safely
+    // Initialize events and settings caches and listen for updates safely
     getShortViewEvents().then((events) => {
       if (!isTerminated) {
         storedEventsCache = events;
       }
     });
 
+    getFocusSettings().then((settings) => {
+      if (!isTerminated) {
+        userSettingsCache = settings;
+        if (currentSession) {
+          const calib = getCalibrationInfo(storedEventsCache, userSettingsCache);
+          currentSession.currentTargetSec = calib.currentTargetSec;
+          currentSession.minimumGateSec = calib.minimumGateSec;
+        }
+      }
+    });
+
     unsubsStorage = onStorageChanged((events) => {
       if (!isTerminated) {
         storedEventsCache = events;
+      }
+    });
+
+    unsubsSettings = onSettingsChanged((settings) => {
+      if (!isTerminated) {
+        userSettingsCache = settings;
+        log('FocusSettings updated in content script:', settings);
+        if (currentSession) {
+          const calib = getCalibrationInfo(storedEventsCache, userSettingsCache);
+          currentSession.currentTargetSec = calib.currentTargetSec;
+          currentSession.minimumGateSec = calib.minimumGateSec;
+        }
       }
     });
 
@@ -660,8 +694,8 @@ export default defineContentScript({
         finalizeCurrentSession();
       }
 
-      // Calculate calibration & target configuration for this new Short
-      const calibInfo = getCalibrationInfo(storedEventsCache);
+      // Calculate calibration & target configuration for this new Short with current user settings
+      const calibInfo = getCalibrationInfo(storedEventsCache, userSettingsCache);
       const isCalibration = !calibInfo.isCalibrated;
       const currentTargetSec = calibInfo.currentTargetSec ?? 8;
       const minimumGateSec = calibInfo.minimumGateSec ?? 3;
@@ -971,6 +1005,15 @@ export default defineContentScript({
           // Ignore
         }
         unsubsStorage = null;
+      }
+
+      if (unsubsSettings) {
+        try {
+          unsubsSettings();
+        } catch {
+          // Ignore
+        }
+        unsubsSettings = null;
       }
 
       bindActiveVideo(null);
