@@ -4,15 +4,17 @@ import { defineConfig } from 'wxt';
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
   manifest: {
-    name: 'FocusScroll - YouTube Shorts Focus Intervention',
-    description: 'Track YouTube Shorts dwell time and rebuild mindfulness with gentle scroll intervention.',
+    name: 'FocusScroll - Shorts & Reels Focus Intervention',
+    description: 'Track YouTube Shorts & Instagram Reels dwell time and rebuild mindfulness with gentle scroll intervention.',
     permissions: ['storage'],
     host_permissions: [
       'https://www.youtube.com/*',
       'https://youtube.com/*',
+      'https://www.instagram.com/*',
+      'https://instagram.com/*',
     ],
     action: {
-      default_title: 'FocusScroll - YouTube Shorts Focus Intervention',
+      default_title: 'FocusScroll - Shorts & Reels Focus Intervention',
       default_icon: {
         16: 'icon/16.png',
         32: 'icon/32.png',

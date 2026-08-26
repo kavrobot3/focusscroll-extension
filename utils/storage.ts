@@ -183,16 +183,16 @@ export function getProgressionRate(settings: FocusSettings): number {
     case 'fixed':
       return 0;
     case 'gentle':
-      // Gentle: lower increase speed (+0.15s per Short)
-      return 0.15;
+      // Gentle: very low, approachable increase (+0.05s per video)
+      return 0.05;
     case 'normal':
-      return 0.4;
-    case 'brisk':
-      return 0.8;
-    case 'custom':
-      return Math.max(0, Number(settings.customIncreasePerShortSec) || 0.15);
-    default:
       return 0.15;
+    case 'brisk':
+      return 0.3;
+    case 'custom':
+      return Math.max(0, Number(settings.customIncreasePerShortSec) || 0.05);
+    default:
+      return 0.05;
   }
 }
 
@@ -208,81 +208,43 @@ export function getCalibrationInfo(
 
   // Sort chronologically ascending by startedAt to identify calibration sessions
   const chronological = [...events].sort((a, b) => a.startedAt - b.startedAt);
-  const validEvents = chronological.filter((e) => e.dwellMs >= 400);
+  const validEvents = chronological.filter((e) => e.dwellMs >= 300);
 
   const calibrationEvents = validEvents.slice(0, CALIBRATION_COUNT_REQUIRED);
   const count = calibrationEvents.length;
   const isCalibrated = count >= CALIBRATION_COUNT_REQUIRED;
 
-  // Number of post-calibration events to compute progressive increase
-  const postCalibCount = Math.max(0, validEvents.length - CALIBRATION_COUNT_REQUIRED);
+  let baselineDwellMs = 3000;
+  let baselineDwellSec = 3.0;
 
-  if (count === 0) {
-    const initialTarget = settings.targetMode === 'manual'
-      ? settings.manualTargetSec
-      : 8;
-    const initialGate = settings.gateMode === 'fixed'
-      ? Math.min(initialTarget, settings.manualGateSec)
-      : Math.max(2, Math.min(10, initialTarget - 3));
-
-    return {
-      isCalibrated: false,
-      calibrationCount: 0,
-      calibrationTarget: CALIBRATION_COUNT_REQUIRED,
-      baselineDwellMs: 4000,
-      baselineDwellSec: 4.0,
-      currentTargetSec: initialTarget,
-      minimumGateSec: initialGate,
-      progressionRateSec: progressionRate,
-      settings,
-    };
+  if (count > 0) {
+    const sumDwellMs = calibrationEvents.reduce((acc, ev) => acc + ev.dwellMs, 0);
+    baselineDwellMs = Math.round(sumDwellMs / count);
+    baselineDwellSec = Number((baselineDwellMs / 1000).toFixed(1));
   }
 
-  const sumDwellMs = calibrationEvents.reduce((acc, ev) => acc + ev.dwellMs, 0);
-  const baselineDwellMs = Math.round(sumDwellMs / count);
-  const baselineDwellSec = Number((baselineDwellMs / 1000).toFixed(1));
-
-  // Determine base target before progression
-  let baseTargetSec: number;
+  // Exact target calculation:
+  // In manual mode, target is exactly manualTargetSec.
+  // In auto mode, target is baseline average dwell (or default 5s if calibrating).
+  let currentTargetSec: number;
   if (settings.targetMode === 'manual') {
-    baseTargetSec = Math.max(4, settings.manualTargetSec);
+    currentTargetSec = settings.manualTargetSec;
   } else {
-    // Auto mode: slightly above baseline dwell
-    baseTargetSec = Math.max(5, Math.round(baselineDwellSec * 1.15));
+    currentTargetSec = isCalibrated ? Math.max(3, Math.round(baselineDwellSec)) : settings.manualTargetSec;
   }
+  currentTargetSec = Number(currentTargetSec.toFixed(1));
 
-  // Progressive target increment based on progression rate and post-calibration events
-  const progressiveIncrement = postCalibCount * progressionRate;
-  const maxCap = Math.max(baseTargetSec, settings.maxTargetCapSec || 30);
-  const calculatedTarget = Math.min(maxCap, baseTargetSec + progressiveIncrement);
-  const currentTargetSec = Number(calculatedTarget.toFixed(1));
-
-  // Calculate minimum gate
+  // Minimum scroll gate
   let minimumGateSec: number;
   if (settings.gateMode === 'fixed') {
     minimumGateSec = Math.min(currentTargetSec, Math.max(1, settings.manualGateSec));
   } else {
-    // Auto gate: target minus 3 seconds (bounded safely)
-    minimumGateSec = Math.max(2, Math.min(20, Math.round(currentTargetSec - 3)));
-  }
-
-  if (!isCalibrated) {
-    return {
-      isCalibrated: false,
-      calibrationCount: count,
-      calibrationTarget: CALIBRATION_COUNT_REQUIRED,
-      baselineDwellMs,
-      baselineDwellSec,
-      currentTargetSec: Math.max(5, baseTargetSec),
-      minimumGateSec: Math.min(3, minimumGateSec),
-      progressionRateSec: progressionRate,
-      settings,
-    };
+    minimumGateSec = Math.max(1, Math.min(currentTargetSec, Math.round(currentTargetSec - 2)));
   }
 
   return {
-    isCalibrated: true,
-    calibrationCount: CALIBRATION_COUNT_REQUIRED,
+    isCalibrated,
+    calibrationCount: Math.min(count, CALIBRATION_COUNT_REQUIRED),
     calibrationTarget: CALIBRATION_COUNT_REQUIRED,
     baselineDwellMs,
     baselineDwellSec,
@@ -383,24 +345,31 @@ export function onStorageChanged(callback: (events: ShortViewEvent[]) => void): 
 }
 
 /**
- * Hard reload the extension and all open YouTube tabs to prevent stale state or errors
+ * Hard reload the extension and all open YouTube & Instagram tabs to prevent stale state or errors
  */
 export async function hardReloadExtension(): Promise<{ success: boolean; reloadedTabs: number }> {
   let reloadedTabs = 0;
 
   try {
-    // 1. Reload any active YouTube tabs if chrome.tabs is available
+    // 1. Reload any active YouTube & Instagram tabs if chrome.tabs is available
     if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query) {
       try {
-        const ytTabs = await chrome.tabs.query({ url: ['*://*.youtube.com/*', '*://youtube.com/*'] });
-        for (const tab of ytTabs) {
+        const matchingTabs = await chrome.tabs.query({
+          url: [
+            '*://*.youtube.com/*',
+            '*://youtube.com/*',
+            '*://*.instagram.com/*',
+            '*://instagram.com/*',
+          ],
+        });
+        for (const tab of matchingTabs) {
           if (tab.id) {
             chrome.tabs.reload(tab.id);
             reloadedTabs++;
           }
         }
       } catch (err) {
-        console.warn('Could not reload YouTube tabs:', err);
+        console.warn('Could not reload active tabs:', err);
       }
     }
 

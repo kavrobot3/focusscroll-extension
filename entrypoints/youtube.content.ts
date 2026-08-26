@@ -21,8 +21,8 @@ interface ActiveShortSession {
   videoDurationSec: number | null;
   hasCompletedFullLoop: boolean;
   calibration: boolean;
-  currentTargetSec: number | null;
-  minimumGateSec: number | null;
+  currentTargetSec: number;
+  minimumGateSec: number;
   earlyScrollAttempts: number;
   gateUnlocked: boolean;
 }
@@ -147,7 +147,7 @@ export default defineContentScript({
     function getRemainingGateSeconds(): number {
       if (!currentSession) return 0;
       const elapsedSec = getActiveElapsedPlayMs() / 1000;
-      const minGate = currentSession.minimumGateSec ?? 3;
+      const minGate = currentSession.minimumGateSec;
       const duration = currentSession.videoDurationSec;
       const effectiveGate = duration && duration > 0 ? Math.min(minGate, Math.max(1, duration - 0.2)) : minGate;
       return Math.max(1, Math.ceil(effectiveGate - elapsedSec));
@@ -298,6 +298,7 @@ export default defineContentScript({
      * Check if the gate is currently active and blocking navigation to the next short
      */
     function isGateActive(): boolean {
+      if (!userSettingsCache.enableYouTube) return false;
       if (!currentSession) return false;
       if (currentSession.gateUnlocked) return false;
 
@@ -341,7 +342,7 @@ export default defineContentScript({
 
           // Effective gate never exceeds the video length
           const effectiveGateSec = Math.min(
-            currentSession.minimumGateSec ?? 3,
+            currentSession.minimumGateSec,
             Math.max(1, duration - 0.2)
           );
 
@@ -355,7 +356,7 @@ export default defineContentScript({
         }
       }
 
-      const minGate = currentSession.minimumGateSec ?? 3;
+      const minGate = currentSession.minimumGateSec;
       const elapsedSec = getActiveElapsedPlayMs() / 1000;
 
       if (elapsedSec >= minGate) {
@@ -517,7 +518,7 @@ export default defineContentScript({
       // Check gate status on timeupdate
       if (currentSession && !currentSession.gateUnlocked) {
         const elapsedSec = getActiveElapsedPlayMs() / 1000;
-        const minGate = currentSession.minimumGateSec ?? 3;
+        const minGate = currentSession.minimumGateSec;
         if (elapsedSec >= minGate) {
           currentSession.gateUnlocked = true;
         }
@@ -627,7 +628,7 @@ export default defineContentScript({
         const dwellSec = dwellMs / 1000;
         const gateUnlocked =
           currentSession.hasCompletedFullLoop ||
-          (dwellSec >= (currentSession.minimumGateSec || 3));
+          (dwellSec >= currentSession.minimumGateSec);
 
         const event: ShortViewEvent = {
           id: currentSession.id,
@@ -697,8 +698,8 @@ export default defineContentScript({
       // Calculate calibration & target configuration for this new Short with current user settings
       const calibInfo = getCalibrationInfo(storedEventsCache, userSettingsCache);
       const isCalibration = !calibInfo.isCalibrated;
-      const currentTargetSec = calibInfo.currentTargetSec ?? 8;
-      const minimumGateSec = calibInfo.minimumGateSec ?? 3;
+      const currentTargetSec = calibInfo.currentTargetSec;
+      const minimumGateSec = calibInfo.minimumGateSec;
 
       // Start new short session
       lastHandledVideoId = videoId;

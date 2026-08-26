@@ -10,16 +10,20 @@ export interface FocusSettings {
   gateMode: GateMode;
   manualGateSec: number;
   maxTargetCapSec: number;
+  enableYouTube: boolean;
+  enableInstagram: boolean;
 }
 
 export const DEFAULT_FOCUS_SETTINGS: FocusSettings = {
   targetMode: 'auto',
-  manualTargetSec: 10,
-  progressionSpeed: 'gentle', // Gentle increase rate: +0.15s per Short
-  customIncreasePerShortSec: 0.15,
+  manualTargetSec: 5,
+  progressionSpeed: 'gentle',
+  customIncreasePerShortSec: 0.05,
   gateMode: 'auto',
-  manualGateSec: 3,
-  maxTargetCapSec: 30,
+  manualGateSec: 2,
+  maxTargetCapSec: 20,
+  enableYouTube: true,
+  enableInstagram: true,
 };
 
 export interface ShortViewEvent {
@@ -30,10 +34,9 @@ export interface ShortViewEvent {
   endedAt: number;
   dwellMs: number;
   timestamp: string;
-  // Gentle intervention mode fields
   calibration: boolean;
-  currentTargetSec: number | null;
-  minimumGateSec: number | null;
+  currentTargetSec: number;
+  minimumGateSec: number;
   earlyScrollAttempts: number;
   gateUnlocked: boolean;
 }
@@ -44,8 +47,8 @@ export interface CalibrationInfo {
   calibrationTarget: number;
   baselineDwellMs: number;
   baselineDwellSec: number;
-  currentTargetSec: number | null;
-  minimumGateSec: number | null;
+  currentTargetSec: number;
+  minimumGateSec: number;
   progressionRateSec: number;
   settings: FocusSettings;
 }
@@ -55,15 +58,15 @@ export interface ShortsStats {
   avgDwellMs: number;
   longestDwellMs: number;
   totalDwellMsToday: number;
-  // Gentle intervention & calibration metrics
   isCalibrated: boolean;
   calibrationCount: number;
   calibrationTarget: number;
   baselineAvgDwellMs: number;
-  currentTargetSec: number | null;
-  minimumGateSec: number | null;
+  currentTargetSec: number;
+  minimumGateSec: number;
   totalEarlyScrollAttempts: number;
   events: ShortViewEvent[];
   settings: FocusSettings;
 }
+
 

@@ -1,6 +1,6 @@
 {
   "name": "FocusScroll Extension",
-  "description": "YouTube Shorts dwell tracker with gentle focus intervention and hidden target gate",
+  "description": "YouTube Shorts and Instagram Reels dwell tracker with gentle focus intervention and hidden target gate",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
