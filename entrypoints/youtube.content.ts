@@ -46,55 +46,6 @@ export default defineContentScript({
     let domObserver: MutationObserver | null = null;
     let unsubsStorage: (() => void) | null = null;
     let lastAttemptTimestamp = 0;
-    let isScrollLocked = false;
-
-    /**
-     * Inject persistent CSS rule to completely freeze the Shorts scroll container when gated
-     */
-    function injectScrollLockStyles() {
-      if (document.getElementById('focusscroll-lock-styles')) return;
-      const style = document.createElement('style');
-      style.id = 'focusscroll-lock-styles';
-      style.textContent = `
-        html.focusscroll-locked ytd-shorts #shorts-container,
-        html.focusscroll-locked #shorts-container,
-        html.focusscroll-locked #shorts-inner-container,
-        html.focusscroll-locked ytd-shorts,
-        .focusscroll-locked-container {
-          overflow-y: hidden !important;
-          touch-action: none !important;
-          overscroll-behavior-y: none !important;
-          scroll-snap-type: none !important;
-        }
-      `;
-      (document.head || document.documentElement).appendChild(style);
-    }
-
-    injectScrollLockStyles();
-
-    /**
-     * Dynamically lock or unlock physical scroll on the Shorts container
-     */
-    function setPhysicalScrollLock(locked: boolean) {
-      if (isScrollLocked === locked) return;
-      isScrollLocked = locked;
-
-      if (locked) {
-        document.documentElement.classList.add('focusscroll-locked');
-        document.body.classList.add('focusscroll-locked');
-        const container = document.querySelector('#shorts-container');
-        if (container) {
-          container.classList.add('focusscroll-locked-container');
-        }
-      } else {
-        document.documentElement.classList.remove('focusscroll-locked');
-        document.body.classList.remove('focusscroll-locked');
-        const container = document.querySelector('#shorts-container');
-        if (container) {
-          container.classList.remove('focusscroll-locked-container');
-        }
-      }
-    }
 
     // Initialize events cache and listen for updates safely
     getShortViewEvents().then((events) => {
@@ -134,7 +85,7 @@ export default defineContentScript({
         el.textContent = 'Stay a moment…';
         Object.assign(el.style, {
           position: 'fixed',
-          bottom: '80px',
+          bottom: '84px',
           left: '50%',
           transform: 'translateX(-50%) translateY(8px)',
           backgroundColor: 'rgba(15, 23, 42, 0.92)',
@@ -184,7 +135,7 @@ export default defineContentScript({
       indicatorTimeout = setTimeout(() => {
         el.style.opacity = '0';
         el.style.transform = 'translateX(-50%) translateY(8px)';
-      }, 1500);
+      }, 1400);
     }
 
     function showUnlockedMessage() {
@@ -254,6 +205,40 @@ export default defineContentScript({
     }
 
     /**
+     * Determine if a user interaction is occurring within comments, description panel, or overlay actions
+     * (These should never be blocked from scrolling/interacting)
+     */
+    function isInsideEngagementOrComments(target: EventTarget | null): boolean {
+      if (!target || !(target instanceof Element)) return false;
+      return Boolean(
+        target.closest(
+          'ytd-engagement-panel-section-list-renderer, ' +
+          '#engagement-panel-comments-section, ' +
+          '#comments, ' +
+          '#contents, ' +
+          '#comment, ' +
+          'ytd-comments-header-renderer, ' +
+          'ytd-comment-thread-renderer, ' +
+          'ytd-comment-view-model, ' +
+          'ytd-comment-reply-dialog-renderer, ' +
+          '#description, ' +
+          '#panel, ' +
+          'ytd-menu-popup-renderer, ' +
+          'tp-yt-paper-dialog, ' +
+          'tp-yt-iron-dropdown, ' +
+          'ytd-shorts-description-video-lockup-view-model, ' +
+          '#metadata-container, ' +
+          '#actions, ' +
+          'ytd-reel-player-overlay-renderer #actions, ' +
+          '#like-button, ' +
+          '#dislike-button, ' +
+          '#comments-button, ' +
+          '#share-button'
+        )
+      );
+    }
+
+    /**
      * Calculate active elapsed playback milliseconds
      */
     function getActiveElapsedPlayMs(): number {
@@ -279,33 +264,24 @@ export default defineContentScript({
      * Check if the gate is currently active and blocking navigation to the next short
      */
     function isGateActive(): boolean {
-      if (!currentSession) {
-        setPhysicalScrollLock(false);
-        return false;
-      }
-      if (currentSession.gateUnlocked) {
-        setPhysicalScrollLock(false);
-        return false;
-      }
+      if (!currentSession) return false;
+      if (currentSession.gateUnlocked) return false;
 
       // 1. Never restrict scrolling on ads or sponsored content
       if (isAdActive()) {
         currentSession.gateUnlocked = true;
-        setPhysicalScrollLock(false);
         return false;
       }
 
-      // 2. Allow user to scroll if more than 4 times deliberately attempted to skip
+      // 2. Allow user to scroll if deliberately attempted to skip multiple times
       if (currentSession.earlyScrollAttempts >= 5) {
         currentSession.gateUnlocked = true;
-        setPhysicalScrollLock(false);
         return false;
       }
 
       // 3. If short has already completed full watch or looped, gate is immediately unlocked
       if (currentSession.hasCompletedFullLoop) {
         currentSession.gateUnlocked = true;
-        setPhysicalScrollLock(false);
         return false;
       }
 
@@ -315,7 +291,6 @@ export default defineContentScript({
         if (video.ended) {
           currentSession.hasCompletedFullLoop = true;
           currentSession.gateUnlocked = true;
-          setPhysicalScrollLock(false);
           return false;
         }
 
@@ -327,12 +302,10 @@ export default defineContentScript({
           if (video.currentTime >= duration - 0.4) {
             currentSession.hasCompletedFullLoop = true;
             currentSession.gateUnlocked = true;
-            setPhysicalScrollLock(false);
             return false;
           }
 
-          // If target or minimum gate > short length:
-          // Effective gate must never exceed the video length
+          // Effective gate never exceeds the video length
           const effectiveGateSec = Math.min(
             currentSession.minimumGateSec ?? 3,
             Math.max(1, duration - 0.2)
@@ -341,11 +314,9 @@ export default defineContentScript({
           const activePlaySec = getActiveElapsedPlayMs() / 1000;
           if (activePlaySec >= effectiveGateSec) {
             currentSession.gateUnlocked = true;
-            setPhysicalScrollLock(false);
             return false;
           }
 
-          setPhysicalScrollLock(true);
           return true;
         }
       }
@@ -355,28 +326,28 @@ export default defineContentScript({
 
       if (elapsedSec >= minGate) {
         currentSession.gateUnlocked = true;
-        setPhysicalScrollLock(false);
         return false;
       }
 
-      setPhysicalScrollLock(true);
       return true;
     }
 
     /**
-     * Clamp scroll container position to active Short if gated
+     * Clamp scroll container position back to active Short without altering CSS properties
      */
     function clampScrollPosition() {
       if (!isGateActive()) return;
 
-      const container = document.querySelector('#shorts-container') as HTMLElement;
+      const container = (document.querySelector('#shorts-container') ||
+        document.querySelector('ytd-shorts #shorts-inner-container')) as HTMLElement | null;
+
       const activeRenderer =
-        (document.querySelector('ytd-reel-video-renderer[is-active]') as HTMLElement) ||
-        (document.querySelector('ytd-reel-video-renderer[active]') as HTMLElement);
+        (document.querySelector('ytd-reel-video-renderer[is-active]') as HTMLElement | null) ||
+        (document.querySelector('ytd-reel-video-renderer[active]') as HTMLElement | null);
 
       if (container && activeRenderer) {
         const targetTop = activeRenderer.offsetTop;
-        if (Math.abs(container.scrollTop - targetTop) > 2) {
+        if (Math.abs(container.scrollTop - targetTop) > 3) {
           container.scrollTop = targetTop;
         }
       }
@@ -483,7 +454,6 @@ export default defineContentScript({
       if (!currentSession) return;
       currentSession.hasCompletedFullLoop = true;
       currentSession.gateUnlocked = true;
-      setPhysicalScrollLock(false);
     }
 
     function handleVideoTimeUpdate() {
@@ -499,14 +469,12 @@ export default defineContentScript({
         if (currentTime >= duration - 0.4 || activeVideoEl.ended) {
           currentSession.hasCompletedFullLoop = true;
           currentSession.gateUnlocked = true;
-          setPhysicalScrollLock(false);
         }
 
         // 2. Loop detected (currentTime jumped from near end back to start)
         if (lastVideoCurrentTime > Math.max(1, duration - 1.5) && currentTime < 1.0) {
           currentSession.hasCompletedFullLoop = true;
           currentSession.gateUnlocked = true;
-          setPhysicalScrollLock(false);
         }
       }
 
@@ -518,7 +486,6 @@ export default defineContentScript({
         const minGate = currentSession.minimumGateSec ?? 3;
         if (elapsedSec >= minGate) {
           currentSession.gateUnlocked = true;
-          setPhysicalScrollLock(false);
         }
       }
     }
@@ -599,9 +566,6 @@ export default defineContentScript({
     function finalizeCurrentSession() {
       if (!currentSession) return;
 
-      // Unlock physical scroll when leaving or finishing
-      setPhysicalScrollLock(false);
-
       // Sync active play time
       if (activeVideoEl && activeVideoEl.paused) {
         currentSession.isPlaying = false;
@@ -674,7 +638,6 @@ export default defineContentScript({
           lastHandledVideoId = null;
           bindActiveVideo(null);
         }
-        setPhysicalScrollLock(false);
         return;
       }
 
@@ -689,11 +652,6 @@ export default defineContentScript({
 
       // If we are already tracking this exact video, check gate state
       if (currentSession && videoId === lastHandledVideoId && currentSession.videoId === videoId) {
-        if (isGateActive()) {
-          setPhysicalScrollLock(true);
-        } else {
-          setPhysicalScrollLock(false);
-        }
         return;
       }
 
@@ -728,11 +686,8 @@ export default defineContentScript({
         currentTargetSec,
         minimumGateSec,
         earlyScrollAttempts: 0,
-        gateUnlocked: false, // Active gate enabled right from Short #1
+        gateUnlocked: false,
       };
-
-      // Activate physical scroll lock on start
-      setPhysicalScrollLock(true);
 
       if (isCalibration) {
         log(`Active Short #${videoId} [Calibration ${calibInfo.calibrationCount + 1}/3]: Gate ${minimumGateSec}s (Target: ${currentTargetSec}s)`);
@@ -748,6 +703,11 @@ export default defineContentScript({
     function handleWheel(e: WheelEvent) {
       if (!ensureContextValid()) return;
 
+      // Never block scrolling inside comments, engagement panels, or descriptions
+      if (isInsideEngagementOrComments(e.target)) {
+        return;
+      }
+
       // deltaY > 0 indicates scrolling down towards next Short
       if (e.deltaY > 0 && isGateActive()) {
         e.preventDefault();
@@ -761,7 +721,6 @@ export default defineContentScript({
             currentSession.earlyScrollAttempts += 1;
             if (currentSession.earlyScrollAttempts >= 5) {
               currentSession.gateUnlocked = true;
-              setPhysicalScrollLock(false);
               showUnlockedMessage();
               return;
             }
@@ -785,9 +744,14 @@ export default defineContentScript({
     function handleTouchMove(e: TouchEvent) {
       if (!ensureContextValid()) return;
 
+      // Never block touch actions inside comments or description panels
+      if (isInsideEngagementOrComments(e.target)) {
+        return;
+      }
+
       if (isGateActive() && e.touches && e.touches[0]) {
         const deltaY = touchStartY - e.touches[0].clientY; // Swiping up moves content down to next video
-        if (deltaY > 5) {
+        if (deltaY > 12) {
           e.preventDefault();
           e.stopPropagation();
           e.stopImmediatePropagation();
@@ -799,7 +763,6 @@ export default defineContentScript({
               currentSession.earlyScrollAttempts += 1;
               if (currentSession.earlyScrollAttempts >= 5) {
                 currentSession.gateUnlocked = true;
-                setPhysicalScrollLock(false);
                 showUnlockedMessage();
                 return;
               }
@@ -841,7 +804,6 @@ export default defineContentScript({
             currentSession.earlyScrollAttempts += 1;
             if (currentSession.earlyScrollAttempts >= 5) {
               currentSession.gateUnlocked = true;
-              setPhysicalScrollLock(false);
               showUnlockedMessage();
               return;
             }
@@ -877,7 +839,6 @@ export default defineContentScript({
             currentSession.earlyScrollAttempts += 1;
             if (currentSession.earlyScrollAttempts >= 5) {
               currentSession.gateUnlocked = true;
-              setPhysicalScrollLock(false);
               showUnlockedMessage();
               return;
             }
@@ -992,8 +953,6 @@ export default defineContentScript({
       } catch {
         // Ignore session finalization error on cleanup
       }
-
-      setPhysicalScrollLock(false);
 
       if (pollInterval) {
         clearInterval(pollInterval);
