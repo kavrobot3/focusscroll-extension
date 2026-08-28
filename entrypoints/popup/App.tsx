@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   CALIBRATION_COUNT_REQUIRED,
   calculateShortsStats,
@@ -20,6 +20,7 @@ import {
   type ShortsStats,
   type ShortViewEvent,
 } from '@/utils/types';
+import { MiniDwellChart } from './MiniDwellChart';
 import './App.css';
 
 export default function App() {
@@ -43,9 +44,11 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
-  const [instantSyncNotice, setInstantSyncNotice] = useState(false);
+  const [instantSyncNotice, setInstantSyncNotice] = useState<string | null>(null);
+  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'overview' | 'activity'>('overview');
 
   // Load events and settings
   useEffect(() => {
@@ -62,7 +65,7 @@ export default function App() {
 
     // Subscribe to runtime storage updates
     const unsubsEvents = onStorageChanged((updatedEvents) => {
-      setStats(calculateShortsStats(updatedEvents, settings));
+      setStats((prev) => calculateShortsStats(updatedEvents, prev.settings));
     });
 
     const unsubsSettings = onSettingsChanged((updatedSettings) => {
@@ -78,19 +81,24 @@ export default function App() {
     };
   }, []);
 
-  // Update setting helper - saves immediately in background for INSTANT application
+  // Update setting helper - saves immediately in storage for REAL-TIME synchronization
   const updateSetting = <K extends keyof FocusSettings>(key: K, value: FocusSettings[K]) => {
-    const updated = { ...settings, [key]: value };
+    const updated: FocusSettings = { ...settings, [key]: value };
     setSettings(updated);
     setSaveSuccess(false);
 
     // Apply instantly in storage so active content scripts pick it up in real-time
     saveFocusSettings(updated);
-    setInstantSyncNotice(true);
-    setTimeout(() => setInstantSyncNotice(false), 1500);
 
-    // Live preview the recalculated target in the stat cards immediately
-    setStats(calculateShortsStats(stats.events, updated));
+    // Recalculate stats immediately to preview new target & gate
+    const updatedStats = calculateShortsStats(stats.events, updated);
+    setStats(updatedStats);
+
+    const targetDesc = key === 'manualTargetSec' || key === 'targetMode'
+      ? `Target: ${updatedStats.currentTargetSec}s`
+      : 'Synced';
+    setInstantSyncNotice(`✓ ${targetDesc}`);
+    setTimeout(() => setInstantSyncNotice(null), 1600);
   };
 
   // Preset handlers - calibrated gently for average short-form video viewers
@@ -147,9 +155,11 @@ export default function App() {
 
     setSettings(preset);
     saveFocusSettings(preset);
-    setInstantSyncNotice(true);
-    setTimeout(() => setInstantSyncNotice(false), 1500);
-    setStats(calculateShortsStats(stats.events, preset));
+    const updatedStats = calculateShortsStats(stats.events, preset);
+    setStats(updatedStats);
+
+    setInstantSyncNotice(`✓ ${updatedStats.currentTargetSec}s Preset Applied`);
+    setTimeout(() => setInstantSyncNotice(null), 1600);
   };
 
   // Save settings and hard reload extension & tabs
@@ -171,29 +181,65 @@ export default function App() {
     }
   };
 
-  const handleClearData = async () => {
+  // Export all viewing data as formatted JSON
+  const handleExportData = () => {
+    try {
+      const exportPayload = {
+        exportDate: new Date().toISOString(),
+        app: 'FocusScroll Extension',
+        version: '1.0.0',
+        description: 'YouTube Shorts and Instagram Reels dwell tracker with gentle focus intervention and hidden target gate',
+        privacyNote: 'Your Shorts viewing data is stored locally on this browser.',
+        stats: {
+          calibrationBaselineDwellMs: stats.baselineAvgDwellMs,
+          calibrationBaselineSec: Number((stats.baselineAvgDwellMs / 1000).toFixed(1)),
+          currentTargetSec: stats.currentTargetSec,
+          minimumGateSec: stats.minimumGateSec,
+          avgDwellMs: stats.avgDwellMs,
+          longestDwellMs: stats.longestDwellMs,
+          shortsWatchedToday: stats.todayCount,
+          totalShortsTimeTodayMs: stats.totalDwellMsToday,
+          totalEarlyScrollAttempts: stats.totalEarlyScrollAttempts,
+          isCalibrated: stats.isCalibrated,
+          calibrationCount: stats.calibrationCount,
+          calibrationTarget: stats.calibrationTarget,
+          totalRecordedEvents: stats.events.length,
+        },
+        settings,
+        events: stats.events,
+      };
+
+      const jsonStr = JSON.stringify(exportPayload, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const dateStamp = new Date().toISOString().split('T')[0];
+      a.download = `focusscroll-data-${dateStamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      setActionFeedback('JSON Data Downloaded ✓');
+      setTimeout(() => setActionFeedback(null), 2000);
+    } catch (err) {
+      console.error('Export failed:', err);
+      setActionFeedback('Export failed');
+      setTimeout(() => setActionFeedback(null), 2000);
+    }
+  };
+
+  // Confirm and perform full reset
+  const handleConfirmReset = async () => {
     setIsClearing(true);
     await clearShortViewEvents();
-    setStats({
-      todayCount: 0,
-      avgDwellMs: 0,
-      longestDwellMs: 0,
-      totalDwellMsToday: 0,
-      isCalibrated: false,
-      calibrationCount: 0,
-      calibrationTarget: CALIBRATION_COUNT_REQUIRED,
-      baselineAvgDwellMs: 0,
-      currentTargetSec: 5,
-      minimumGateSec: 2,
-      totalEarlyScrollAttempts: 0,
-      events: [],
-      settings,
-    });
-    setActionFeedback('Test data cleared');
-    setTimeout(() => {
-      setIsClearing(false);
-      setActionFeedback(null);
-    }, 1500);
+    const updatedStats = calculateShortsStats([], settings);
+    setStats(updatedStats);
+    setIsResetConfirmOpen(false);
+    setIsClearing(false);
+    setActionFeedback('All viewing data reset ✓');
+    setTimeout(() => setActionFeedback(null), 2000);
   };
 
   // Simulation helpers for testing in web sandbox preview
@@ -256,14 +302,14 @@ export default function App() {
 
   const handleSimulateFastTrackCalibration = async () => {
     const now = Date.now();
-    const durations = [4, 6, 5]; // Realistic 4-6s baseline dwells
+    const durations = [4.5, 6.2, 5.0]; // Realistic 4-6s baseline dwells
     const sampleIds = ['dQw4w9WgXcQ', 'Cx9721_reels', 'kXYiU_JCYtU'];
 
     await clearShortViewEvents();
 
     for (let i = 0; i < 3; i++) {
       const durSec = durations[i] ?? 5;
-      const dwellMs = durSec * 1000;
+      const dwellMs = Math.round(durSec * 1000);
       const startedAt = now - (3 - i) * 60000;
       const endedAt = startedAt + dwellMs;
       const vid = sampleIds[i] ?? `demo_${i}`;
@@ -287,7 +333,7 @@ export default function App() {
 
     const updated = await getShortViewEvents();
     setStats(calculateShortsStats(updated, settings));
-    setActionFeedback('3 Calibration views saved! Baseline ~5s');
+    setActionFeedback('3 Baseline Calibration views recorded!');
     setTimeout(() => setActionFeedback(null), 2000);
   };
 
@@ -296,37 +342,86 @@ export default function App() {
 
   return (
     <div className="popup-container" id="focusscroll-popup">
-      {/* Header */}
+      {/* Toast Feedback Notification */}
+      {actionFeedback && (
+        <div className="toast-notification" id="toast-notification">
+          <span>{actionFeedback}</span>
+        </div>
+      )}
+
+      {/* Reset Confirmation Modal / Overlay */}
+      {isResetConfirmOpen && (
+        <div className="confirm-modal-backdrop" id="reset-confirm-modal">
+          <div className="confirm-modal-card">
+            <div className="confirm-modal-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="8" x2="12" y2="12"></line>
+                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+              </svg>
+            </div>
+            <h3 className="confirm-modal-title">Reset All Data?</h3>
+            <p className="confirm-modal-desc">
+              This will permanently delete all recorded Shorts and Reels viewing history, clear baseline calibration, and reset your analytics.
+            </p>
+            <div className="confirm-modal-actions">
+              <button
+                type="button"
+                className="btn-modal-cancel"
+                id="btn-cancel-reset"
+                onClick={() => setIsResetConfirmOpen(false)}
+                disabled={isClearing}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-modal-confirm"
+                id="btn-confirm-reset"
+                onClick={handleConfirmReset}
+                disabled={isClearing}
+              >
+                {isClearing ? 'Resetting...' : 'Confirm Reset'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Header with FocusScroll Branding */}
       <header className="header" id="popup-header">
-        <div className="brand">
-          <img
-            src="/icon/48.png"
-            alt="FocusScroll Logo"
-            className="brand-logo-img"
-            id="brand-logo-img"
-            referrerPolicy="no-referrer"
-            onError={(e) => {
-              const target = e.currentTarget;
-              target.src = '/logo.svg';
-            }}
-          />
+        <div className="brand" id="brand-identity">
+          <div className="brand-logo-container">
+            <img
+              src="/icon/48.png"
+              alt="FocusScroll Logo"
+              className="brand-logo-img"
+              id="brand-logo-img"
+              referrerPolicy="no-referrer"
+              onError={(e) => {
+                const target = e.currentTarget;
+                target.src = '/logo.svg';
+              }}
+            />
+            <div className="brand-logo-glow"></div>
+          </div>
           <div>
             <div className="brand-title-row">
               <h1 className="brand-title" id="brand-title">FocusScroll</h1>
-              <span className="brand-tag">Shorts & Reels</span>
+              <span className="brand-tag">PRO</span>
             </div>
-            <p className="brand-subtitle" title="Gentle focus and dwell pacing on YouTube Shorts & Instagram Reels">
-              Shorts & Instagram Reels Focus
+            <p className="brand-subtitle" title="Mindful pacing & focus protection on YouTube Shorts & Instagram Reels">
+              Shorts & Reels Focus Interceptor
             </p>
           </div>
         </div>
         <div className={`status-badge ${stats.isCalibrated ? 'active' : 'calibrating'}`} id="status-badge">
           <span className="status-dot"></span>
-          <span>{stats.isCalibrated ? 'Intervention Active' : 'Calibrating'}</span>
+          <span>{stats.isCalibrated ? 'Active Protection' : 'Calibrating'}</span>
         </div>
       </header>
 
-      {/* Target & Progression Speed Settings Accordion */}
+      {/* Target & Settings Control Drawer */}
       <section className="settings-card" id="settings-card">
         <button
           type="button"
@@ -341,14 +436,14 @@ export default function App() {
                 <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
               </svg>
             </span>
-            <span>Target, Progression & Platform Settings</span>
+            <span>Target & Progression Settings</span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             {instantSyncNotice ? (
-              <span className="live-sync-badge">✓ Live Synced</span>
+              <span className="live-sync-badge" id="live-sync-notice">{instantSyncNotice}</span>
             ) : (
               <span className="settings-badge">
-                {settings.progressionSpeed === 'fixed' ? 'Fixed Target' : `+${effectiveProgRate}s/vid`}
+                {settings.targetMode === 'manual' ? `${settings.manualTargetSec}s Target` : 'Auto Target'}
               </span>
             )}
             <span className={`settings-toggle-arrow ${isSettingsOpen ? 'open' : ''}`}>▼</span>
@@ -357,185 +452,71 @@ export default function App() {
 
         {isSettingsOpen && (
           <div className="settings-content" id="settings-content-drawer">
-            {/* Quick Presets Tuned for Real Average Users */}
+            {/* Quick Presets */}
             <div className="presets-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span className="presets-label">Friendly Presets</span>
-                <span style={{ fontSize: '9px', color: '#38bdf8' }}>⚡ Auto-applies instantly</span>
+                <span className="presets-label">Pacing Presets</span>
+                <span style={{ fontSize: '9px', color: '#22d3ee' }}>⚡ Updates in real-time</span>
               </div>
               <div className="presets-buttons">
                 <button
                   type="button"
                   className={`btn-preset ${settings.progressionSpeed === 'fixed' && settings.manualTargetSec === 4 ? 'active' : ''}`}
                   onClick={() => handleApplyPreset('starter')}
-                  title="Zero pressure: 4s target, 2s gate, no progression increase"
+                  title="4s Target, 2s Gate, Fixed speed"
                 >
-                  🐣 Starter (4s)
+                  🐣 4s Fixed
                 </button>
                 <button
                   type="button"
                   className={`btn-preset ${settings.progressionSpeed === 'gentle' && settings.targetMode === 'auto' ? 'active' : ''}`}
                   onClick={() => handleApplyPreset('gentle')}
-                  title="Ultra gentle: baseline target, 2s gate, +0.05s/video growth"
+                  title="Auto baseline, 2s gate, +0.05s growth"
                 >
-                  🌿 Gentle Flow
+                  🌿 Gentle
                 </button>
                 <button
                   type="button"
                   className={`btn-preset ${settings.manualTargetSec === 7 ? 'active' : ''}`}
                   onClick={() => handleApplyPreset('balanced')}
-                  title="Balanced: 7s target, 2s gate, +0.10s/video growth"
+                  title="7s Target, 2s gate, +0.10s growth"
                 >
-                  🎯 Balanced (7s)
+                  🎯 7s Target
                 </button>
                 <button
                   type="button"
                   className={`btn-preset ${settings.manualTargetSec === 10 ? 'active' : ''}`}
                   onClick={() => handleApplyPreset('deep')}
-                  title="Mindful discipline: 10s target, 3s gate, +0.15s/video growth"
+                  title="10s Target, 3s gate, +0.15s growth"
                 >
-                  🧘 Deep (10s)
+                  🧘 10s Deep
                 </button>
               </div>
             </div>
 
-            {/* Platform Toggles: YouTube Shorts & Instagram Reels */}
-            <div className="setting-group" id="setting-group-platforms">
-              <div className="setting-title-row">
-                <span className="setting-title">Active Platforms</span>
-                <span className="setting-active-val">
-                  {[settings.enableYouTube && 'YouTube', settings.enableInstagram && 'Instagram'].filter(Boolean).join(' + ') || 'None'}
-                </span>
-              </div>
-              <div className="platform-toggles-grid">
-                <label className={`platform-toggle-item ${settings.enableYouTube ? 'active' : ''}`}>
-                  <input
-                    type="checkbox"
-                    checked={settings.enableYouTube}
-                    onChange={(e) => updateSetting('enableYouTube', e.target.checked)}
-                  />
-                  <span className="platform-toggle-label">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
-                    </svg>
-                    YouTube Shorts
-                  </span>
-                </label>
-
-                <label className={`platform-toggle-item ${settings.enableInstagram ? 'active' : ''}`}>
-                  <input
-                    type="checkbox"
-                    checked={settings.enableInstagram}
-                    onChange={(e) => updateSetting('enableInstagram', e.target.checked)}
-                  />
-                  <span className="platform-toggle-label">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect>
-                      <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"></path>
-                      <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line>
-                    </svg>
-                    Instagram Reels
-                  </span>
-                </label>
-              </div>
-            </div>
-
-            {/* 1. Target Increase Speed Control */}
-            <div className="setting-group" id="setting-group-speed">
-              <div className="setting-title-row">
-                <span className="setting-title">Target Progression Speed</span>
-                <span className="setting-active-val">
-                  {settings.progressionSpeed === 'fixed' ? '0.0s (Fixed)' : `+${effectiveProgRate}s / video`}
-                </span>
-              </div>
-              <p className="setting-desc">
-                How much the target focus duration increases after each watched video.
-              </p>
-              <div className="speed-tabs">
-                <button
-                  type="button"
-                  className={`btn-speed-tab ${settings.progressionSpeed === 'gentle' ? 'active' : ''}`}
-                  onClick={() => updateSetting('progressionSpeed', 'gentle')}
-                >
-                  <span>Gentle</span>
-                  <span className="speed-tab-sub">+0.05s</span>
-                </button>
-                <button
-                  type="button"
-                  className={`btn-speed-tab ${settings.progressionSpeed === 'normal' ? 'active' : ''}`}
-                  onClick={() => updateSetting('progressionSpeed', 'normal')}
-                >
-                  <span>Normal</span>
-                  <span className="speed-tab-sub">+0.15s</span>
-                </button>
-                <button
-                  type="button"
-                  className={`btn-speed-tab ${settings.progressionSpeed === 'fixed' ? 'active' : ''}`}
-                  onClick={() => updateSetting('progressionSpeed', 'fixed')}
-                >
-                  <span>Fixed</span>
-                  <span className="speed-tab-sub">No grow</span>
-                </button>
-                <button
-                  type="button"
-                  className={`btn-speed-tab ${settings.progressionSpeed === 'custom' ? 'active' : ''}`}
-                  onClick={() => updateSetting('progressionSpeed', 'custom')}
-                >
-                  <span>Custom</span>
-                  <span className="speed-tab-sub">Custom</span>
-                </button>
-              </div>
-
-              {settings.progressionSpeed === 'custom' && (
-                <div className="custom-speed-row">
-                  <span>Step: +</span>
-                  <input
-                    type="range"
-                    className="slider-input"
-                    min="0.01"
-                    max="1.0"
-                    step="0.01"
-                    value={settings.customIncreasePerShortSec}
-                    onChange={(e) => updateSetting('customIncreasePerShortSec', parseFloat(e.target.value))}
-                  />
-                  <div className="stepper-control">
-                    <input
-                      type="number"
-                      className="stepper-number-input"
-                      min="0.01"
-                      max="3.0"
-                      step="0.01"
-                      value={settings.customIncreasePerShortSec}
-                      onChange={(e) => updateSetting('customIncreasePerShortSec', parseFloat(e.target.value) || 0.05)}
-                    />
-                    <span style={{ fontSize: '10px', color: '#94a3b8' }}>s/vid</span>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* 2. Tweak Target Mode & Duration */}
+            {/* Target Duration Selector */}
             <div className="setting-group" id="setting-group-target">
               <div className="setting-title-row">
                 <span className="setting-title">Target Duration</span>
                 <span className="setting-active-val">
-                  {settings.targetMode === 'auto' ? 'Adaptive Auto' : `${settings.manualTargetSec}s Target`}
+                  {settings.targetMode === 'auto' ? '✨ Adaptive Auto' : `🎯 ${settings.manualTargetSec}s`}
                 </span>
               </div>
+
               <div className="segmented-mode-toggle">
+                <button
+                  type="button"
+                  className={`btn-mode-tab ${settings.targetMode === 'manual' ? 'active' : ''}`}
+                  onClick={() => updateSetting('targetMode', 'manual')}
+                >
+                  ⚙️ Manual Custom
+                </button>
                 <button
                   type="button"
                   className={`btn-mode-tab ${settings.targetMode === 'auto' ? 'active' : ''}`}
                   onClick={() => updateSetting('targetMode', 'auto')}
                 >
                   ✨ Auto (From Baseline)
-                </button>
-                <button
-                  type="button"
-                  className={`btn-mode-tab ${settings.targetMode === 'manual' ? 'active' : ''}`}
-                  onClick={() => updateSetting('targetMode', 'manual')}
-                >
-                  ⚙️ Manual Tweak
                 </button>
               </div>
 
@@ -582,66 +563,88 @@ export default function App() {
               )}
             </div>
 
-            {/* 3. Minimum Scroll Gate & Max Ceiling */}
-            <div className="setting-group" id="setting-group-gate">
+            {/* Platform Toggles */}
+            <div className="setting-group" id="setting-group-platforms">
               <div className="setting-title-row">
-                <span className="setting-title">Scroll Gate & Max Ceiling</span>
+                <span className="setting-title">Platforms</span>
                 <span className="setting-active-val">
-                  Gate: {settings.gateMode === 'auto' ? 'Auto (~2s)' : `${settings.manualGateSec}s`} • Cap: {settings.maxTargetCapSec}s
+                  {[settings.enableYouTube && 'YouTube', settings.enableInstagram && 'Instagram'].filter(Boolean).join(' + ') || 'None'}
                 </span>
               </div>
-              <div className="target-input-row">
-                <span style={{ fontSize: '10px', color: '#cbd5e1' }}>Gate Mode:</span>
-                <div className="segmented-mode-toggle" style={{ flex: 1 }}>
-                  <button
-                    type="button"
-                    className={`btn-mode-tab ${settings.gateMode === 'auto' ? 'active' : ''}`}
-                    onClick={() => updateSetting('gateMode', 'auto')}
-                  >
-                    Auto Gate
-                  </button>
-                  <button
-                    type="button"
-                    className={`btn-mode-tab ${settings.gateMode === 'fixed' ? 'active' : ''}`}
-                    onClick={() => updateSetting('gateMode', 'fixed')}
-                  >
-                    Fixed Gate
-                  </button>
-                </div>
-              </div>
-
-              {settings.gateMode === 'fixed' && (
-                <div className="target-input-row">
-                  <span style={{ fontSize: '10px', color: '#cbd5e1' }}>Fixed Gate:</span>
+              <div className="platform-toggles-grid">
+                <label className={`platform-toggle-item ${settings.enableYouTube ? 'active' : ''}`}>
                   <input
-                    type="range"
-                    className="slider-input"
-                    min="1"
-                    max="10"
-                    step="1"
-                    value={settings.manualGateSec}
-                    onChange={(e) => updateSetting('manualGateSec', parseInt(e.target.value, 10))}
+                    type="checkbox"
+                    checked={settings.enableYouTube}
+                    onChange={(e) => updateSetting('enableYouTube', e.target.checked)}
                   />
-                  <span style={{ fontSize: '11px', fontWeight: 600, color: '#22d3ee', minWidth: '24px', textAlign: 'right' }}>
-                    {settings.manualGateSec}s
+                  <span className="platform-toggle-label">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+                    </svg>
+                    YouTube Shorts
                   </span>
-                </div>
-              )}
+                </label>
 
-              <div className="target-input-row">
-                <span style={{ fontSize: '10px', color: '#cbd5e1' }}>Max Cap:</span>
-                <input
-                  type="range"
-                  className="slider-input"
-                  min="8"
-                  max="60"
-                  step="2"
-                  value={settings.maxTargetCapSec}
-                  onChange={(e) => updateSetting('maxTargetCapSec', parseInt(e.target.value, 10))}
-                />
-                <span style={{ fontSize: '11px', fontWeight: 600, color: '#22d3ee', minWidth: '28px', textAlign: 'right' }}>
-                  {settings.maxTargetCapSec}s
+                <label className={`platform-toggle-item ${settings.enableInstagram ? 'active' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={settings.enableInstagram}
+                    onChange={(e) => updateSetting('enableInstagram', e.target.checked)}
+                  />
+                  <span className="platform-toggle-label">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect>
+                      <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"></path>
+                      <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line>
+                    </svg>
+                    Instagram Reels
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            {/* Target Progression Speed */}
+            <div className="setting-group" id="setting-group-speed">
+              <div className="setting-title-row">
+                <span className="setting-title">Target Progression Speed</span>
+                <span className="setting-active-val">
+                  {settings.progressionSpeed === 'fixed' ? '0.0s (Fixed)' : `+${effectiveProgRate}s / video`}
                 </span>
+              </div>
+              <div className="speed-tabs">
+                <button
+                  type="button"
+                  className={`btn-speed-tab ${settings.progressionSpeed === 'gentle' ? 'active' : ''}`}
+                  onClick={() => updateSetting('progressionSpeed', 'gentle')}
+                >
+                  <span>Gentle</span>
+                  <span className="speed-tab-sub">+0.05s</span>
+                </button>
+                <button
+                  type="button"
+                  className={`btn-speed-tab ${settings.progressionSpeed === 'normal' ? 'active' : ''}`}
+                  onClick={() => updateSetting('progressionSpeed', 'normal')}
+                >
+                  <span>Normal</span>
+                  <span className="speed-tab-sub">+0.15s</span>
+                </button>
+                <button
+                  type="button"
+                  className={`btn-speed-tab ${settings.progressionSpeed === 'fixed' ? 'active' : ''}`}
+                  onClick={() => updateSetting('progressionSpeed', 'fixed')}
+                >
+                  <span>Fixed</span>
+                  <span className="speed-tab-sub">No grow</span>
+                </button>
+                <button
+                  type="button"
+                  className={`btn-speed-tab ${settings.progressionSpeed === 'custom' ? 'active' : ''}`}
+                  onClick={() => updateSetting('progressionSpeed', 'custom')}
+                >
+                  <span>Custom</span>
+                  <span className="speed-tab-sub">Custom</span>
+                </button>
               </div>
             </div>
 
@@ -665,32 +668,28 @@ export default function App() {
                     <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line>
                     <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line>
                   </svg>
-                  <span>Reloading YouTube & Instagram Tabs...</span>
-                </>
-              ) : saveSuccess ? (
-                <>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="20 6 9 17 4 12"></polyline>
-                  </svg>
-                  <span>Settings Applied & Tabs Reloaded!</span>
+                  <span>Reloading Active Tabs...</span>
                 </>
               ) : (
                 <>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
                   </svg>
-                  <span>Hard Reload Tabs & Extension</span>
+                  <span>Hard Refresh Active Tabs</span>
                 </>
               )}
             </button>
-            <div className="reload-notice">
-              Settings sync live in real-time. Click above if you wish to do a clean hard refresh across all open tabs.
-            </div>
           </div>
         )}
       </section>
 
-      {/* Calibration Progress Section */}
+      {/* Mini Line Chart: Dwell Time over Last 20 Shorts */}
+      <MiniDwellChart
+        events={stats.events}
+        currentTargetSec={stats.currentTargetSec}
+      />
+
+      {/* Calibration Progress Bar */}
       <section className="calibration-card" id="calibration-card">
         <div className="calibration-header">
           <div className="calibration-title-group">
@@ -705,7 +704,7 @@ export default function App() {
           </div>
           <span className="calibration-meta">
             {stats.isCalibrated
-              ? `Baseline: ${formatDuration(stats.baselineAvgDwellMs)} avg`
+              ? `Baseline: ${(stats.baselineAvgDwellMs / 1000).toFixed(1)}s`
               : `${stats.calibrationTarget - stats.calibrationCount} remaining`}
           </span>
         </div>
@@ -720,115 +719,193 @@ export default function App() {
 
         <div className="calibration-caption">
           {stats.isCalibrated
-            ? `Intervention active. Target progression: ${settings.progressionSpeed === 'fixed' ? 'Fixed (no increase)' : `+${effectiveProgRate}s/video`}.`
+            ? `Active focus target: ${stats.currentTargetSec}s (Scroll Gate: ${stats.minimumGateSec}s).`
             : 'Focus protection starts with a gentle 2s breath pause while calculating your personalized baseline.'}
         </div>
       </section>
 
-      {/* Core Metrics Grid */}
-      <section className="stats-grid" id="stats-grid">
-        {/* Target */}
-        <div className={`stat-card ${stats.isCalibrated ? 'highlight' : ''}`} id="stat-card-target">
-          <span className="stat-label">Focus Target</span>
-          <span className="stat-value cyan">
-            {stats.currentTargetSec}s
-          </span>
-          <span className="stat-subtext">
-            Gate: {stats.minimumGateSec}s • {settings.progressionSpeed === 'fixed' ? 'Fixed' : `+${effectiveProgRate}s`}
-          </span>
+      {/* 6 Required Core Stats Grid */}
+      <section className="stats-section" id="stats-section">
+        <div className="section-label-row">
+          <span className="section-label">Performance Metrics</span>
+          <span className="section-sublabel">Shorts & Reels</span>
         </div>
 
-        {/* Early Scroll Attempts */}
-        <div className="stat-card" id="stat-card-early-scrolls">
-          <span className="stat-label">Early Scroll Attempts</span>
-          <span className={`stat-value ${stats.totalEarlyScrollAttempts > 0 ? 'amber' : ''}`}>
-            {stats.totalEarlyScrollAttempts}
-          </span>
-          <span className="stat-subtext">
-            {stats.totalEarlyScrollAttempts > 0 ? 'Intercepted before gate' : 'None recorded today'}
-          </span>
-        </div>
+        <div className="stats-grid-6" id="stats-grid-6">
+          {/* 1. Calibration Baseline */}
+          <div className={`stat-card ${stats.isCalibrated ? 'highlight-purple' : ''}`} id="stat-card-baseline">
+            <span className="stat-label">Calibration Baseline</span>
+            <span className="stat-value purple">
+              {stats.baselineAvgDwellMs > 0
+                ? `${(stats.baselineAvgDwellMs / 1000).toFixed(1)}s`
+                : '--'}
+            </span>
+            <span className="stat-subtext">
+              {stats.isCalibrated
+                ? `Calibrated (${stats.calibrationCount} vids)`
+                : `Phase ${stats.calibrationCount}/${stats.calibrationTarget}`}
+            </span>
+          </div>
 
-        {/* Average Dwell Time */}
-        <div className="stat-card" id="stat-card-avg-time">
-          <span className="stat-label">Average Dwell Time</span>
-          <span className="stat-value">{formatDuration(stats.avgDwellMs)}</span>
-          <span className="stat-subtext">
-            {stats.todayCount > 0 ? `${stats.todayCount} total videos today` : 'No videos today'}
-          </span>
-        </div>
+          {/* 2. Current Target */}
+          <div className="stat-card highlight" id="stat-card-target">
+            <span className="stat-label">Current Target</span>
+            <span className="stat-value cyan">
+              {stats.currentTargetSec}s
+            </span>
+            <span className="stat-subtext">
+              Gate: {stats.minimumGateSec}s • {settings.progressionSpeed === 'fixed' ? 'Fixed' : `+${effectiveProgRate}s`}
+            </span>
+          </div>
 
-        {/* Longest Watch */}
-        <div className="stat-card" id="stat-card-longest-watch">
-          <span className="stat-label">Longest Watch</span>
-          <span className="stat-value">{formatDuration(stats.longestDwellMs)}</span>
-          <span className="stat-subtext">
-            Total: {formatDuration(stats.totalDwellMsToday)}
-          </span>
+          {/* 3. Average Dwell Time */}
+          <div className="stat-card" id="stat-card-avg-dwell">
+            <span className="stat-label">Average Dwell Time</span>
+            <span className="stat-value">
+              {formatDuration(stats.avgDwellMs)}
+            </span>
+            <span className="stat-subtext">
+              {stats.todayCount > 0 ? `${stats.todayCount} views today` : 'No views today'}
+            </span>
+          </div>
+
+          {/* 4. Longest Watch */}
+          <div className="stat-card" id="stat-card-longest-watch">
+            <span className="stat-label">Longest Watch</span>
+            <span className="stat-value amber">
+              {formatDuration(stats.longestDwellMs)}
+            </span>
+            <span className="stat-subtext">
+              Session peak dwell
+            </span>
+          </div>
+
+          {/* 5. Shorts Watched Today */}
+          <div className="stat-card" id="stat-card-watched-today">
+            <span className="stat-label">Watched Today</span>
+            <span className="stat-value">
+              {stats.todayCount}
+            </span>
+            <span className="stat-subtext">
+              {stats.totalEarlyScrollAttempts > 0
+                ? `${stats.totalEarlyScrollAttempts} early scrolls stopped`
+                : 'Pacing on track'}
+            </span>
+          </div>
+
+          {/* 6. Total Shorts Time Today */}
+          <div className="stat-card" id="stat-card-total-time-today">
+            <span className="stat-label">Total Time Today</span>
+            <span className="stat-value emerald">
+              {formatDuration(stats.totalDwellMsToday)}
+            </span>
+            <span className="stat-subtext">
+              Total viewing duration
+            </span>
+          </div>
         </div>
       </section>
 
-      {/* Recent Shorts & Reels Activity Feed */}
+      {/* Activity Toggle & Feed */}
       <section className="recent-section" id="recent-section">
         <div className="recent-header">
-          <span>Recent Activity (Shorts & Reels)</span>
-          <span>{stats.events.length > 0 ? `${stats.events.length} recorded` : ''}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span>Recent Activity</span>
+            <span className="activity-count-pill">{stats.events.length}</span>
+          </div>
+          <button
+            type="button"
+            className="btn-toggle-activity-view"
+            onClick={() => setActiveTab(activeTab === 'overview' ? 'activity' : 'overview')}
+          >
+            {activeTab === 'overview' ? 'View Feed ▼' : 'Hide Feed ▲'}
+          </button>
         </div>
 
-        {stats.events.length === 0 ? (
-          <div className="empty-state" id="empty-state">
-            No Shorts or Reels recorded yet. Open YouTube Shorts or Instagram Reels to begin.
-          </div>
-        ) : (
-          <div className="recent-list" id="recent-list">
-            {stats.events.slice(0, 6).map((ev) => {
-              const isInsta = ev.url?.includes('instagram.com') || ev.videoId?.includes('reels') || ev.videoId?.includes('insta');
-              return (
-                <div key={ev.id} className="recent-item" id={`event-item-${ev.id}`}>
-                  <div className="recent-left">
-                    <span className={`event-platform-tag ${isInsta ? 'platform-ig' : 'platform-yt'}`}>
-                      {isInsta ? 'IG Reel' : 'YT Short'}
-                    </span>
-                    <span className={`event-tag ${ev.calibration ? 'tag-calib' : 'tag-intervention'}`}>
-                      {ev.calibration ? 'Calib' : 'Intervention'}
-                    </span>
-                    <span className="recent-video-id">#{ev.videoId?.slice(0, 10) || 'video'}</span>
-                  </div>
-                  <div className="recent-right">
-                    {ev.earlyScrollAttempts > 0 ? (
-                      <span className="early-tag" title={`${ev.earlyScrollAttempts} early scroll attempts`}>
-                        ⚡ {ev.earlyScrollAttempts} {ev.earlyScrollAttempts === 1 ? 'attempt' : 'attempts'}
+        {activeTab === 'activity' && (
+          stats.events.length === 0 ? (
+            <div className="empty-state" id="empty-state">
+              No Shorts or Reels recorded yet. Open YouTube Shorts or Instagram Reels to begin.
+            </div>
+          ) : (
+            <div className="recent-list" id="recent-list">
+              {stats.events.slice(0, 8).map((ev) => {
+                const isInsta = ev.url?.includes('instagram.com') || ev.videoId?.includes('reels') || ev.videoId?.includes('insta');
+                return (
+                  <div key={ev.id} className="recent-item" id={`event-item-${ev.id}`}>
+                    <div className="recent-left">
+                      <span className={`event-platform-tag ${isInsta ? 'platform-ig' : 'platform-yt'}`}>
+                        {isInsta ? 'IG Reel' : 'YT Short'}
                       </span>
-                    ) : null}
-                    <span className="recent-dwell">{formatDuration(ev.dwellMs)}</span>
+                      <span className={`event-tag ${ev.calibration ? 'tag-calib' : 'tag-intervention'}`}>
+                        {ev.calibration ? 'Calib' : 'Intervention'}
+                      </span>
+                      <span className="recent-video-id">#{ev.videoId?.slice(0, 10) || 'video'}</span>
+                    </div>
+                    <div className="recent-right">
+                      {ev.earlyScrollAttempts > 0 ? (
+                        <span className="early-tag" title={`${ev.earlyScrollAttempts} early scroll attempts`}>
+                          ⚡ {ev.earlyScrollAttempts} {ev.earlyScrollAttempts === 1 ? 'attempt' : 'attempts'}
+                        </span>
+                      ) : null}
+                      <span className="recent-dwell">{formatDuration(ev.dwellMs)}</span>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )
         )}
       </section>
 
-      {/* Action Buttons & Sandbox Simulation */}
-      <div className="actions" id="actions-panel">
-        <button
-          type="button"
-          className="btn-clear"
-          id="btn-clear-data"
-          onClick={handleClearData}
-          disabled={isClearing}
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="3 6 5 6 21 6"></polyline>
-            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+      {/* Privacy Note & Data Management Actions */}
+      <section className="data-management-card" id="data-management-card">
+        {/* Privacy Note */}
+        <div className="privacy-note" id="privacy-note">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#34d399" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="privacy-icon">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
           </svg>
-          {actionFeedback || (isClearing ? 'Clearing...' : 'Clear test data')}
-        </button>
+          <span>Your Shorts viewing data is stored locally on this browser.</span>
+        </div>
 
-        {/* Simulation testing tools for web preview */}
+        {/* Action Buttons: Export Data & Reset Data */}
+        <div className="data-actions-row" id="data-actions-row">
+          {/* Export JSON Button */}
+          <button
+            type="button"
+            className="btn-export-data"
+            id="btn-export-json"
+            onClick={handleExportData}
+            title="Download viewing events & statistics as a JSON file"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            <span>Export Data (JSON)</span>
+          </button>
+
+          {/* Reset All Data Button */}
+          <button
+            type="button"
+            className="btn-reset-data"
+            id="btn-reset-data"
+            onClick={() => setIsResetConfirmOpen(true)}
+            title="Clear all recorded data and restart baseline calibration"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+            <span>Reset All Data</span>
+          </button>
+        </div>
+
+        {/* Sandbox Preview Simulation Controls (Web sandbox only) */}
         {typeof chrome === 'undefined' || !chrome.storage ? (
           <div className="simulation-panel" id="simulation-panel">
-            <div className="simulation-label">Sandbox Preview Controls:</div>
+            <div className="simulation-label">Sandbox Simulator:</div>
             <div className="simulation-buttons">
               <button
                 type="button"
@@ -836,7 +913,7 @@ export default function App() {
                 id="btn-simulate-yt"
                 onClick={() => handleSimulateSingleEvent('youtube')}
               >
-                + Sim YT Short
+                + YT Short
               </button>
               <button
                 type="button"
@@ -844,7 +921,7 @@ export default function App() {
                 id="btn-simulate-ig"
                 onClick={() => handleSimulateSingleEvent('instagram')}
               >
-                + Sim IG Reel
+                + IG Reel
               </button>
               {!stats.isCalibrated ? (
                 <button
@@ -853,17 +930,18 @@ export default function App() {
                   id="btn-simulate-fast-calib"
                   onClick={handleSimulateFastTrackCalibration}
                 >
-                  ⚡ Fast 3 Calib Views
+                  ⚡ Fast 3 Calib
                 </button>
               ) : null}
             </div>
           </div>
         ) : null}
-      </div>
+      </section>
 
-      <div className="footer-note">
-        FocusScroll • YouTube Shorts & Instagram Reels
-      </div>
+      {/* Footer Brand */}
+      <footer className="footer-note" id="footer-note">
+        FocusScroll • Mindful Pacing for YouTube Shorts & Instagram Reels
+      </footer>
     </div>
   );
 }

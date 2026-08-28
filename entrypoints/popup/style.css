@@ -3,7 +3,7 @@
   line-height: 1.5;
   font-weight: 400;
   color-scheme: dark;
-  background-color: #0c1117;
+  background-color: #080c14;
   color: #f1f5f9;
 }
 
@@ -16,14 +16,33 @@
 body {
   margin: 0;
   padding: 0;
-  width: 320px;
-  min-height: 440px;
-  background-color: #0c1117;
+  min-height: 100vh;
+  background-color: #080c14;
   color: #f1f5f9;
   overflow-x: hidden;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 #root {
   width: 100%;
-  padding: 16px;
+  max-width: 380px;
+  min-height: 100vh;
+  padding: 14px;
+  background-color: #0b0f19;
+  border-left: 1px solid #161f30;
+  border-right: 1px solid #161f30;
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.7);
+}
+
+@media (max-width: 380px) {
+  #root {
+    border-left: none;
+    border-right: none;
+    box-shadow: none;
+    padding: 12px;
+  }
 }
